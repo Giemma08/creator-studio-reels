@@ -1,0 +1,20 @@
+{
+  // Worker 5: Reels schneiden (mit Container für die Reel-Werkstatt)
+  "name": "creator-studio-reels",
+  "main": "index.js",
+  "compatibility_date": "2026-09-01",
+  "keep_vars": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "SUPABASE_URL": "https://gqqzfyfgvgufzkiyjzjh.supabase.co",
+    "SUPABASE_ANON_KEY": "sb_publishable_Jx_4bUee83daL8sD7y9Bfg_wuHS-O5w"
+  },
+  "containers": [
+    { "class_name": "ReelRenderer", "image": "./Dockerfile", "instance_type": "standard-3", "max_instances": 10 }
+  ],
+  "durable_objects": {
+    "bindings": [ { "name": "RENDERER", "class_name": "ReelRenderer" } ]
+  },
+  "migrations": [ { "tag": "v1", "new_sqlite_classes": ["ReelRenderer"] } ],
+  "r2_buckets": [ { "binding": "REELS_BUCKET", "bucket_name": "creator-studio-reels" } ]
+}
