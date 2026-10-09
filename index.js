@@ -14,7 +14,7 @@ export class ReelRenderer extends Container {
   enableInternet = true;
 }
 
-const LANG_NAMES = { de: "Deutsch", en: "English", es: "Español", fr: "Français", it: "Italiano" };
+const LANG_NAMES = { de: "Deutsch", en: "English", fr: "Français", it: "Italiano", es: "Español", pt: "Português", nl: "Nederlands", sv: "Svenska", ca: "Català" };
 const MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
 const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg"];
 const IMG_TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
@@ -71,9 +71,15 @@ function monthKey() {
 function creditStatus(acc) {
   const plan = acc.plans || {};
   const total = Number(plan.monthly_credits || 0);
-  const monthly = acc.credits_month === monthKey() ? Number(acc.monthly_credits_left || 0) : total;
+  const now = Date.now();
+  let pe = acc.period_end ? new Date(acc.period_end).getTime() : 0;
+  // Abrechnungszeitraum läuft noch: Restguthaben gilt. Abgelaufen oder keiner gesetzt: volle Credits (Erneuerung beim nächsten Abbuchen).
+  const running = pe > now || (!pe && acc.credits_month === monthKey());
+  const monthly = running ? Number(acc.monthly_credits_left || 0) : total;
+  if (!pe) { const d = new Date(); pe = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1); }
+  while (pe <= now) { const d = new Date(pe); d.setUTCMonth(d.getUTCMonth() + 1); pe = d.getTime(); }
   const bonus = Number(acc.bonus_credits || 0);
-  return { monthly, monthly_total: total, bonus, total: monthly + bonus };
+  return { monthly, monthly_total: total, bonus, total: monthly + bonus, renews_at: new Date(pe).toISOString() };
 }
 
 async function loadBrand(env, userId) {
@@ -111,20 +117,43 @@ async function charged(env, s, action, { instructions, input }, opts = {}) {
   const m = models && models[0];
   if (!m || !m.model_id || m.model_id.startsWith("HIER")) return { err: json({ error: "model_missing" }, 500) };
 
-  const payload = { model: m.model_id, instructions, input, max_output_tokens: cost.max_tokens };
-  if (m.reasoning_effort) payload.reasoning = { effort: m.reasoning_effort };
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    console.log("OpenAI Fehler", res.status, (await res.text()).slice(0, 500));
-    return { err: json({ error: "ai" }, 502) };
+  const call = async (maxTok) => {
+    const payload = { model: m.model_id, instructions, input, max_output_tokens: maxTok };
+    if (m.reasoning_effort) payload.reasoning = { effort: m.reasoning_effort };
+    const res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { console.log("OpenAI Fehler", res.status, (await res.text()).slice(0, 500)); return null; }
+    return await res.json();
+  };
+  const rate = await usdEur(env);
+  // Jeden Aufruf protokollieren, auch wenn die Antwort leer oder abgebrochen ist: OpenAI berechnet die Tokens trotzdem
+  const logUsage = async (data, credits, note) => {
+    const us = (data && data.usage) || {};
+    const inTok = us.input_tokens || 0;
+    const cached = (us.input_tokens_details && us.input_tokens_details.cached_tokens) || 0;
+    const outTok = us.output_tokens || 0;
+    const costUsd = ((inTok - cached) * Number(m.usd_per_m_input) + cached * Number(m.usd_per_m_cached) + outTok * Number(m.usd_per_m_output)) / 1e6;
+    await db(env, "usage", { method: "POST", prefer: "return=minimal", body: {
+      user_id: s.user.id, action: note ? action + ":" + note : action, model_id: m.model_id, input_tokens: inTok, cached_tokens: cached, output_tokens: outTok,
+      cost_eur: Math.round(costUsd * rate * 1e6) / 1e6, credits,
+    } });
+  };
+
+  let data = await call(cost.max_tokens);
+  if (!data) return { err: json({ error: "ai" }, 502) };
+  let text = extractText(data);
+  // Hat das Nachdenken das Token-Budget aufgebraucht, einmal mit doppeltem Budget wiederholen
+  if (!text && data.status === "incomplete") {
+    console.log("Antwort abgebrochen:", JSON.stringify(data.incomplete_details || {}), "Budget", cost.max_tokens);
+    await logUsage(data, 0, "abgebrochen");
+    data = await call(Math.min(cost.max_tokens * 2, 16000));
+    if (!data) return { err: json({ error: "ai" }, 502) };
+    text = extractText(data);
   }
-  const data = await res.json();
-  const text = extractText(data);
-  if (!text) return { err: json({ error: "empty_reply" }, 502) };
+  if (!text) { await logUsage(data, 0, "leer"); return { err: json({ error: "empty_reply" }, 502) }; }
 
   // Credits abbuchen (erst nach erfolgreicher Antwort)
   let credits = status;
@@ -133,18 +162,7 @@ async function charged(env, s, action, { instructions, input }, opts = {}) {
     const row = Array.isArray(spent) ? spent[0] : spent;
     if (row) credits = { monthly: row.monthly_left, monthly_total: status.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left };
   }
-
-  // Echte KI-Kosten protokollieren
-  const us = data.usage || {};
-  const inTok = us.input_tokens || 0;
-  const cached = (us.input_tokens_details && us.input_tokens_details.cached_tokens) || 0;
-  const outTok = us.output_tokens || 0;
-  const rate = await usdEur(env);
-  const costUsd = ((inTok - cached) * Number(m.usd_per_m_input) + cached * Number(m.usd_per_m_cached) + outTok * Number(m.usd_per_m_output)) / 1e6;
-  await db(env, "usage", { method: "POST", prefer: "return=minimal", body: {
-    user_id: s.user.id, action, model_id: m.model_id, input_tokens: inTok, cached_tokens: cached, output_tokens: outTok,
-    cost_eur: Math.round(costUsd * rate * 1e6) / 1e6, credits: cost.credits,
-  } });
+  await logUsage(data, cost.credits, "");
 
   return { text, credits };
 }
@@ -178,7 +196,8 @@ async function mediaUrl(env, origin, id, name) {
 }
 
 async function publicJob(env, origin, j, full) {
-  const out = { id: j.id, created_at: j.created_at, updated_at: j.updated_at, title: j.title, status: j.status, duration: j.duration, renders: j.renders, length: j.length, error: j.error };
+  const out = { id: j.id, created_at: j.created_at, updated_at: j.updated_at, title: j.title, status: j.status, duration: j.duration, renders: j.renders, length: j.length, error: j.error, kind: j.kind || "reel" };
+  if (j.kind === "transcript") { out.has_text = !!j.transcript; return out; }
   out.thumb = j.status !== "uploading" && j.status !== "analyzing" && j.status !== "error" ? await mediaUrl(env, origin, j.id, j.status === "done" ? "final.jpg" : "thumb.jpg") : "";
   if (full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
@@ -195,7 +214,8 @@ async function routeList(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const id = url.searchParams.get("id");
   if (id) { const j = await getJob(env, s, id); return j ? json({ job: await publicJob(env, url.origin, j, true) }) : json({ error: "not_found" }, 404); }
-  const rows = await db(env, "reel_jobs?user_id=eq." + s.user.id + "&select=id,created_at,updated_at,title,status,duration,renders,length,error&order=created_at.desc&limit=50");
+  const kindFilter = url.searchParams.get("kind") === "transcript" ? "&kind=eq.transcript" : "&kind=eq.reel";
+  const rows = await db(env, "reel_jobs?user_id=eq." + s.user.id + kindFilter + "&select=id,created_at,updated_at,title,status,duration,renders,length,error,kind&order=created_at.desc&limit=50");
   const list = [];
   for (const j of rows || []) list.push(await publicJob(env, url.origin, j, false));
   return json({ jobs: list });
@@ -205,11 +225,13 @@ async function routeStart(request, env) {
   const s = await session(request, env); if (s.err) return s.err;
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   if (!(Number(b.size) > 0) || Number(b.size) > MAX_BYTES) return json({ error: "file_size" }, 400);
-  const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
-  const need = cost && cost[0] ? Number(cost[0].credits) : 30;
+  const isTranscript = b.kind === "transcript";
+  const cost = await db(env, "action_costs?action=eq." + (isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
+  const per = cost && cost[0] ? Number(cost[0].credits) : (isTranscript ? 1 : 30);
+  const need = isTranscript ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
   const st = creditStatus(s.acc);
   if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
-  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading" } });
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isTranscript ? "transcript" : "reel" } });
   const job = rows[0];
   const mp = await env.REELS_BUCKET.createMultipartUpload(keyOf(job.id, "input"), { httpMetadata: { contentType: String(b.type || "video/mp4").slice(0, 60) } });
   await patchJob(env, job.id, { upload_id: mp.uploadId });
@@ -247,6 +269,13 @@ async function routeComplete(request, env, url) {
   const parts = (Array.isArray(b.parts) ? b.parts : []).map(x => ({ partNumber: Number(x.partNumber), etag: String(x.etag) }));
   const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, "input"), j.upload_id);
   await mp.complete(parts);
+  if (j.kind === "transcript") {
+    // Lange Aufnahme: nur in Text umwandeln, Credits nach der tatsächlichen Länge
+    await patchJob(env, j.id, { status: "analyzing", upload_id: null });
+    try { await startContainer(env, url.origin, j, "transcribe", { openai_key: env.OPENAI_API_KEY, lang: s.acc.content_lang || "de", max_seconds: 3 * 3600 + 60 }); }
+    catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
+    return json({ ok: true });
+  }
   // Credits abbuchen
   const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
   const need = cost && cost[0] ? Number(cost[0].credits) : 30;
@@ -386,6 +415,17 @@ async function routeInternal(request, env, url) {
   if (kind === "callback" && request.method === "POST") {
     const b = await request.json();
     const rows = await db(env, "reel_jobs?id=eq." + id + "&select=*"); const j = rows && rows[0]; if (!j) return new Response("", { status: 404 });
+    if (b.phase === "transcribe") {
+      if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Die Aufnahme ist länger als 3 Stunden." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
+      const mins = Math.max(1, Math.ceil((Number(b.duration) || 0) / 60));
+      await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, transcript: String(b.text || "").slice(0, 400000) });
+      const cost = await db(env, "action_costs?action=eq.transcribe_min&select=credits");
+      const per = cost && cost[0] ? Number(cost[0].credits) : 1;
+      try { await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: j.user_id, p_amount: mins * per, p_action: "transcribe_min", p_note: mins + " Minuten" } }); } catch (e) {}
+      const rate = await usdEur(env);
+      await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "transcribe_min", model_id: "whisper-1", input_tokens: 0, cached_tokens: 0, output_tokens: 0, cost_eur: Math.round((mins * 0.006 + (Number(b.seconds) || 0) * 0.00006) * rate * 1e6) / 1e6, credits: mins * per } });
+      return new Response("ok");
+    }
     if (b.status === "error") {
       await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
       if (b.phase === "analyze") {

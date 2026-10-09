@@ -148,17 +148,44 @@ async function render(job) {
   return { status: "done", length: map.total };
 }
 
+// ---------- Lange Aufnahmen in Text umwandeln (Repurposing) ----------
+async function transcribe(job) {
+  const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
+  const input = await getInput(job, dir);
+  const info = await probe(input);
+  if (info.duration > (job.max_seconds || 3 * 3600)) throw new Error("too_long");
+  if (!info.hasAudio) throw new Error("Die Datei enthält keine Tonspur.");
+  // Ton herauslösen und in 10-Minuten-Stücke teilen (jedes Stück bleibt unter der Größengrenze der Transkription)
+  await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", "-f", "segment", "-segment_time", "600", path.join(dir, "part_%03d.mp3")]);
+  const parts = fs.readdirSync(dir).filter(f => /^part_\d+\.mp3$/.test(f)).sort();
+  const texts = [];
+  for (const f of parts) {
+    let ok = false, tries = 0, last = "";
+    while (!ok && tries++ < 3) {
+      const fd = new FormData();
+      fd.append("file", new Blob([fs.readFileSync(path.join(dir, f))], { type: "audio/mpeg" }), f);
+      fd.append("model", "whisper-1"); fd.append("response_format", "text");
+      if (job.lang) fd.append("language", job.lang);
+      const res = await fetch(OPENAI + "/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + job.openai_key }, body: fd });
+      if (res.ok) { texts.push((await res.text()).trim()); ok = true; } else { last = res.status + " " + (await res.text()).slice(0, 200); await new Promise(r => setTimeout(r, 2000 * tries)); }
+    }
+    if (!ok) throw new Error("transcribe " + last);
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+  return { status: "ready", duration: info.duration, text: texts.join("\n\n") };
+}
+
 // ---------- HTTP ----------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") { res.end("ok"); return; }
-  if (req.method !== "POST" || !["/analyze", "/render"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
+  if (req.method !== "POST" || !["/analyze", "/render", "/transcribe"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
   let body = "";
   req.on("data", d => { body += d; if (body.length > 5e6) req.destroy(); });
   req.on("end", () => {
     let job; try { job = JSON.parse(body); } catch { res.statusCode = 400; res.end(); return; }
     if (!job.id || !/^[0-9a-f-]{36}$/.test(job.id) || !job.base || !job.token) { res.statusCode = 400; res.end(); return; }
     res.statusCode = 202; res.end(JSON.stringify({ accepted: true }));
-    const fn = req.url === "/analyze" ? analyze : render;
+    const fn = req.url === "/analyze" ? analyze : req.url === "/transcribe" ? transcribe : render;
     const t0 = Date.now();
     fn(job).then(r => callback(job, Object.assign({ phase: req.url.slice(1), seconds: (Date.now() - t0) / 1000, usage: job.usage || null }, r)))
       .catch(e => { console.log("Fehler", e.stack || e); callback(job, { phase: req.url.slice(1), status: "error", error: String(e.message || e).slice(0, 300) }); });
