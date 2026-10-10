@@ -20,6 +20,14 @@ const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg"];
 const IMG_TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 
 export default {
+  // Täglich: hochgeladene Rohvideos und Aufnahmen nach 30 Tagen löschen (fertige Reels bleiben)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+      const old = await db(env, "reel_jobs?input_deleted=eq.false&created_at=lt." + cutoff + "&status=in.(done,ready,error)&select=id&limit=200") || [];
+      for (const j of old) { try { await env.REELS_BUCKET.delete(keyOf(j.id, "input")); } catch (e) {} await patchJob(env, j.id, { input_deleted: true }); }
+    })().catch(e => console.log("Aufräumen", e && e.message)));
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
@@ -232,7 +240,14 @@ async function routeStart(request, env) {
   const need = isTranscript ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
   const st = creditStatus(s.acc);
   if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
-  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isTranscript ? "transcript" : "reel" } });
+  // Speicher des Tarifs prüfen
+  try {
+    const f = (s.acc.plans && s.acc.plans.features) || {};
+    const limit = (Number(f.storage_gb) || (f.pro ? 30 : 10)) * 1024 * 1024 * 1024;
+    const u = await db(env, "rpc/storage_usage", { method: "POST", body: { p_user: s.user.id } });
+    if ((Number(Array.isArray(u) ? u[0] : u) || 0) + Number(b.size) > limit) return json({ error: "storage_full" }, 403);
+  } catch (e) {}
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isTranscript ? "transcript" : "reel", input_bytes: Math.round(Number(b.size) || 0) } });
   const job = rows[0];
   const mp = await env.REELS_BUCKET.createMultipartUpload(keyOf(job.id, "input"), { httpMetadata: { contentType: String(b.type || "video/mp4").slice(0, 60) } });
   await patchJob(env, job.id, { upload_id: mp.uploadId });
@@ -329,6 +344,7 @@ async function routeRender(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  if (j && j.input_deleted) return json({ error: "input_deleted" }, 410);
   if (!["ready", "done", "error"].includes(j.status) || !(j.words || []).length && j.has_audio) return json({ error: "busy" }, 409);
   let credits = null;
   if (j.renders >= 3) {
@@ -443,7 +459,8 @@ async function routeInternal(request, env, url) {
       const usd = mins * 0.006 + ((u.input_tokens || 0) * 0.5 + (u.output_tokens || 0) * 2) / 1e6 + (Number(b.seconds) || 0) * 0.00006;
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_edit", model_id: "whisper-1+plan", input_tokens: u.input_tokens || 0, cached_tokens: 0, output_tokens: u.output_tokens || 0, cost_eur: Math.round(usd * rate * 1e6) / 1e6, credits: 0 } });
     } else {
-      await patchJob(env, id, { status: "done", length: Number(b.length) || 0, error: null });
+      let outBytes = 0; try { const hd = await env.REELS_BUCKET.head(keyOf(id, "final.mp4")); outBytes = hd ? hd.size : 0; } catch (e) {}
+      await patchJob(env, id, { status: "done", length: Number(b.length) || 0, error: null, output_bytes: outBytes });
       const rate = await usdEur(env);
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_render", model_id: "container", input_tokens: 0, cached_tokens: 0, output_tokens: 0, cost_eur: Math.round((Number(b.seconds) || 0) * 0.00006 * rate * 1e6) / 1e6, credits: 0 } });
     }
