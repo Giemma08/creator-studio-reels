@@ -226,6 +226,7 @@ async function routeStart(request, env) {
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   if (!(Number(b.size) > 0) || Number(b.size) > MAX_BYTES) return json({ error: "file_size" }, 400);
   const isTranscript = b.kind === "transcript";
+  if (isTranscript) { const feat = (s.acc.plans && s.acc.plans.features) || {}; if (!feat.pro && !s.acc.is_admin) return json({ error: "pro_only" }, 403); }
   const cost = await db(env, "action_costs?action=eq." + (isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
   const per = cost && cost[0] ? Number(cost[0].credits) : (isTranscript ? 1 : 30);
   const need = isTranscript ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
