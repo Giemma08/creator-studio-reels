@@ -312,11 +312,34 @@ async function routeComplete(request, env, url) {
   return json({ ok: true, credits: { monthly: row.monthly_left, monthly_total: st.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left } });
 }
 
+const CAPTION_STYLES = ["klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
+const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
+const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji"];
+function sanitizeEffects(list) {
+  const s = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").slice(0, n);
+  const i = v => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n < 3000 ? n : undefined; };
+  return (Array.isArray(list) ? list : []).filter(x => x && FX_TYPES.includes(x.type)).slice(0, 4).map(x => {
+    const o = { type: x.type, von: i(x.von), bis: i(x.bis), wort: i(x.wort) };
+    if (x.type === "checkliste") { o.titel = s(x.titel, 40); o.punkte = (Array.isArray(x.punkte) ? x.punkte : []).slice(0, 4).map(p => ({ text: s(p && p.text, 40), wort: i(p && p.wort) })).filter(p => p.text); }
+    if (x.type === "zahl") { o.wert = s(x.wert, 16); o.praefix = s(x.praefix, 4); o.suffix = s(x.suffix, 6); o.label = s(x.label, 40); }
+    if (x.type === "kommentar") { o.stichwort = s(x.stichwort, 24); o.antwort = s(x.antwort, 60); }
+    if (x.type === "karte") { o.titel = s(x.titel, 30); o.text = s(x.text, 80); }
+    if (x.type === "zitat") { o.text = s(x.text, 120); o.titel = s(x.titel, 30); }
+    if (x.type === "kapitel") { o.nummer = s(x.nummer, 3); o.titel = s(x.titel, 40); }
+    if (x.type === "diagramm") { o.titel = s(x.titel, 30); o.wert = s(x.wert, 16); }
+    if (x.type === "vergleich") { o.vorher = s(x.vorher, 50); o.nachher = s(x.nachher, 50); }
+    if (x.type === "nachricht") { o.nachrichten = (Array.isArray(x.nachrichten) ? x.nachrichten : []).slice(0, 3).map(m => s(m, 70)).filter(Boolean); }
+    if (x.type === "emoji") { o.emoji = Array.from(String(x.emoji || "")).slice(0, 2).join(""); }
+    if (x.off) o.off = true;
+    return o;
+  }).filter(o => o.von !== undefined || o.wort !== undefined);
+}
 function sanitizeStyle(st) {
   st = st && typeof st === "object" ? st : {};
   const hex = v => /^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v) : undefined;
-  return { accent: hex(st.accent) || "#E6007E", position: ["unten", "mitte", "oben"].includes(st.position) ? st.position : "unten",
-    size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false };
+  return { accent: hex(st.accent) || "#E6007E", position: ["auto", "unten", "mitte", "oben"].includes(st.position) ? st.position : "auto",
+    size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
+    caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects) };
 }
 
 function sanitizeWords(words, max) {
@@ -452,7 +475,8 @@ async function routeInternal(request, env, url) {
       return new Response("ok");
     }
     if (b.phase === "analyze") {
-      await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, has_audio: !!b.has_audio, words: sanitizeWords(b.words), hook_titel: String(b.hook_titel || "").slice(0, 120), bild_ideen: Array.isArray(b.bild_ideen) ? b.bild_ideen.slice(0, 5) : [] });
+      await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, has_audio: !!b.has_audio, words: sanitizeWords(b.words), hook_titel: String(b.hook_titel || "").slice(0, 120), bild_ideen: Array.isArray(b.bild_ideen) ? b.bild_ideen.slice(0, 5) : [],
+        style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: b.effekte || [] })) });
       // Kosten protokollieren: Transkription + Schnittplan + Rechenzeit
       const rate = await usdEur(env);
       const mins = (Number(b.duration) || 0) / 60, u = b.usage || {};

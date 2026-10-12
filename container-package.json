@@ -1,0 +1,5 @@
+{
+  "name": "reel-werkstatt",
+  "private": true,
+  "dependencies": { "hyperframes": "0.8.34", "gsap": "3.15.0" }
+}

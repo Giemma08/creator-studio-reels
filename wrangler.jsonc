@@ -10,7 +10,7 @@
     "SUPABASE_ANON_KEY": "sb_publishable_Jx_4bUee83daL8sD7y9Bfg_wuHS-O5w"
   },
   "containers": [
-    { "class_name": "ReelRenderer", "image": "./Dockerfile", "instance_type": "standard-3", "max_instances": 10 }
+    { "class_name": "ReelRenderer", "image": "./Dockerfile", "instance_type": "standard-4", "max_instances": 10 }
   ],
   "durable_objects": {
     "bindings": [ { "name": "RENDERER", "class_name": "ReelRenderer" } ]

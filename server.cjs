@@ -7,6 +7,9 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const R = require("./render.cjs");
+const E = require("./effects.cjs");
+const ASSET_DIR = path.join(__dirname, "assets");
+const HF_BIN = path.join(__dirname, "node_modules", ".bin", "hyperframes");
 
 const PORT = 8080;
 const WORK = "/tmp/jobs";
@@ -83,7 +86,7 @@ async function analyze(job) {
   const thumb = path.join(dir, "thumb.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(Math.min(1, info.duration / 2)), "-i", input, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/thumb.jpg", hdr(job), thumb, "image/jpeg");
-  return { status: "ready", duration: info.duration, has_audio: info.hasAudio, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [] };
+  return { status: "ready", duration: info.duration, has_audio: info.hasAudio, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [], effekte: Array.isArray(plan.effekte) ? plan.effekte.slice(0, 3) : [] };
 }
 
 function attachPunctuation(words, text) {
@@ -104,7 +107,18 @@ async function aiPlan(job, words) {
     "4. 'zooms': bis zu 3 Wortnummern für einen kurzen Zoom an starken Momenten.\n" +
     "5. 'toene': bis zu 3 Stellen für einen Soundeffekt, Ton aus: pop, ping, kling, whoosh, klick, tada. Sparsam, nur wo es den Moment unterstreicht (z. B. Zahl, Pointe, Wendung).\n" +
     "6. 'bild_ideen': bis zu 3 Wortnummern, an denen ein kleines eingeblendetes Bild helfen würde, mit kurzer Idee.\n" +
-    "Antworte ausschließlich mit JSON: {\"schnitte\":[[0,0]],\"hook_titel\":\"\",\"betont\":[0],\"zooms\":[0],\"toene\":[{\"i\":0,\"ton\":\"pop\"}],\"bild_ideen\":[{\"i\":0,\"idee\":\"\"}]}";
+    "7. 'effekte': höchstens 2 grafische Effekte, NUR wenn der gesprochene Text sie wirklich trägt, sonst leere Liste. Typen: " +
+    "'checkliste' (der Text zählt 2 bis 4 Schritte oder Punkte nacheinander auf: von, bis, titel, punkte:[{text, wort}] mit der Wortnummer, an der der Punkt gesagt wird; text höchstens 4 Wörter), " +
+    "'zahl' (eine Zahl wird gesagt: wort = Wortnummer der Zahl, wert genau wie gesagt, praefix/suffix z. B. '€' oder '%', label höchstens 4 Wörter), " +
+    "'kommentar' (Aufruf, ein Wort zu kommentieren: von, bis, stichwort genau wie gesagt in Großbuchstaben, antwort kurz und freundlich), " +
+    "'karte' (eine zentrale Kernaussage: von, bis, titel höchstens 3 Wörter, text höchstens 8 Wörter), " +
+    "'zitat' (ein besonders starker, zitierfähiger Satz: von, bis, text wörtlich gekürzt auf höchstens 14 Wörter), " +
+    "'kapitel' (ein neuer Abschnitt wie 'Schritt 2' oder 'Punkt drei' beginnt: wort, nummer, titel höchstens 4 Wörter), " +
+    "'diagramm' (es geht um Wachstum oder Entwicklung: von, bis, titel höchstens 3 Wörter, wert nur wenn gesagt), " +
+    "'vergleich' (ein Vorher und ein Nachher werden genannt: von, bis, vorher und nachher je höchstens 5 Wörter), " +
+    "'nachricht' (eine Nachricht, Anfrage oder ein Gespräch wird erzählt: von, bis, nachrichten: 2 bis 3 kurze Sätze abwechselnd), " +
+    "'emoji' (eine Pointe oder ein starkes Gefühl: wort, emoji genau ein passendes Emoji). Erfinde keine Zahlen, Namen oder Ergebnisse. Lieber kein Effekt als ein unpassender.\n" +
+    "Antworte ausschließlich mit JSON: {\"schnitte\":[[0,0]],\"hook_titel\":\"\",\"betont\":[0],\"zooms\":[0],\"toene\":[{\"i\":0,\"ton\":\"pop\"}],\"bild_ideen\":[{\"i\":0,\"idee\":\"\"}],\"effekte\":[{\"type\":\"zahl\",\"wort\":0,\"wert\":\"\",\"label\":\"\"}]}";
   const res = await fetch(OPENAI + "/v1/responses", {
     method: "POST", headers: { Authorization: "Bearer " + job.openai_key, "Content-Type": "application/json" },
     body: JSON.stringify({ model: job.model, instructions, input: [{ role: "user", content: list.slice(0, 60000) }], max_output_tokens: 2000 }),
@@ -128,11 +142,35 @@ async function render(job) {
   if (!segs.length) throw new Error("nothing_left");
   const map = R.remapper(segs);
   const style = Object.assign({ accent: "#E6007E", font: "Poppins" }, job.style || {}, { hook_titel: job.hook_titel || "" });
+  // 1. Wo ist die Person? Kleine Vorschau in 1080x1920 (wie das Reel), 3 Bilder pro Sekunde
+  let layout = null;
+  try {
+    const proxy = path.join(dir, "proxy.mp4");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-an", "-vf", "fps=3,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", proxy]);
+    layout = JSON.parse(await run("python3", [path.join(__dirname, "layout.py"), proxy]));
+  } catch (e) { console.log("Vermessung übersprungen", e.message); }
+  // 2. Effekte als durchsichtige Ebenen rendern (HyperFrames)
+  const effects = [], hide = [];
+  const planned = E.planEffects((job.style && job.style.effects) || [], words, map, layout);
+  for (let i = 0; i < planned.length; i++) {
+    const it = planned[i], fxDir = path.join(dir, "fx" + i);
+    try {
+      E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE" }, ASSET_DIR);
+      await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
+      effects.push({ file: path.join(fxDir, "out.webm"), t0: it.t0, d: it.d });
+      if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
+    } catch (e) { console.log("Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); }
+  }
+  style.hide_captions = hide;
   const assFile = path.join(dir, "subs.ass");
-  fs.writeFileSync(assFile, R.buildAss(words, map, style));
+  fs.writeFileSync(assFile, R.buildAss(words, map, style, layout));
+  const look = R.LOOKS[style.look] || null;
+  if (look && !style.caption_style) style.caption_style = look.caption;
   const kept = words.filter(w => !w.cut);
-  const zooms = kept.filter(w => w.zoom).map(w => map(w.s));
-  const sounds = kept.filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
+  let zoomWords = kept.filter(w => w.zoom);
+  if (look && look.autoZoom) zoomWords = zoomWords.concat(kept.filter(w => w.emph && !w.zoom)).sort((a, b) => a.s - b.s).filter((w, i, arr) => i === 0 || map(w.s) - map(arr[i - 1].s) > 2.2).slice(0, 6);
+  const zooms = zoomWords.map(w => map(w.s));
+  const sounds = (look && look.sounds === false ? [] : kept).filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
   const images = [];
   for (const w of kept.filter(x => x.image && x.image.key)) {
     const f = path.join(dir, "img-" + images.length);
@@ -140,12 +178,13 @@ async function render(job) {
     images.push({ file: f, t: map(w.s), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: w.image.pos || "oben", size: w.image.size || "mittel" });
   }
   const out = path.join(dir, "final.mp4");
-  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
+  const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
+  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, focus, grade: look ? look.grade : "", zoomStrength: look ? look.zoom : 1, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
   const thumb = path.join(dir, "final.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", "0.4", "-i", out, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.mp4", hdr(job), out, "video/mp4");
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.jpg", hdr(job), thumb, "image/jpeg");
-  return { status: "done", length: map.total };
+  return { status: "done", length: map.total, effects_used: effects.length, layout: layout ? { framing: layout.framing, found: layout.found } : null };
 }
 
 // ---------- Lange Aufnahmen in Text umwandeln (Repurposing) ----------
