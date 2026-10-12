@@ -313,7 +313,8 @@ async function routeComplete(request, env, url) {
   return json({ ok: true, credits: { monthly: row.monthly_left, monthly_total: st.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left } });
 }
 
-const CAPTION_STYLES = ["klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
+const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "Montserrat", "Poppins", "Cormorant Garamond", "Space Grotesk", "Syne"];
+const CAPTION_STYLES = ["marke", "klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
 const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif"];
 function sanitizeEffects(list) {
@@ -372,7 +373,9 @@ function sanitizeStyle(st) {
   const hex = v => /^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v) : undefined;
   return { accent: hex(st.accent) || "#E6007E", position: ["auto", "unten", "mitte", "oben"].includes(st.position) ? st.position : "auto",
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
-    caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects) };
+    caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on,
+    logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 
 function sanitizeWords(words, max) {

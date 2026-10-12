@@ -166,13 +166,21 @@ async function render(job) {
       continue;
     }
     try {
-      E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE" }, ASSET_DIR);
+      E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "" }, ASSET_DIR);
       await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
       effects.push({ file: path.join(fxDir, "out.webm"), t0: it.t0, d: it.d });
       if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
     } catch (e) { console.log("Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); }
   }
   style.hide_captions = hide;
+  // Logo der Marke laden (nur Bilder, höchstens 3 MB)
+  let logoFile = null;
+  if (style.logo_on && /^https:\/\//.test(style.logo || "")) {
+    try {
+      const r = await fetch(style.logo); const ct = r.headers.get("content-type") || "";
+      if (r.ok && /^image\/(png|jpeg|webp)/.test(ct)) { const buf = Buffer.from(await r.arrayBuffer()); if (buf.length < 3e6) { logoFile = path.join(dir, "logo." + (ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg")); fs.writeFileSync(logoFile, buf); } }
+    } catch (e) { console.log("Logo übersprungen", e.message); }
+  }
   const assFile = path.join(dir, "subs.ass");
   fs.writeFileSync(assFile, R.buildAss(words, map, style, layout));
   const look = R.LOOKS[style.look] || null;
@@ -190,7 +198,7 @@ async function render(job) {
   }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, focus, grade: look ? look.grade : "", zoomStrength: look ? look.zoom : 1, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
+  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, focus, logo: logoFile, grade: look ? look.grade : "", zoomStrength: look ? look.zoom : 1, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
   const thumb = path.join(dir, "final.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", "0.4", "-i", out, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.mp4", hdr(job), out, "video/mp4");

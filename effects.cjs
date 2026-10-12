@@ -36,6 +36,9 @@ function placement(layout, needH) {
   return { top: Math.max(belowTop, Math.min(1470 - needH, below.y0 + 10)), zone: "below", hideCaptions: true };
 }
 
+function brandFace(theme) {
+  return theme && theme.fontFile ? "@font-face{font-family:'Marke';font-weight:100 900;src:url('fonts/" + theme.fontFile.replace(/'/g, "") + "')}" : "";
+}
 function fontFaces() {
   return "@font-face{font-family:'Poppins';font-weight:600;src:url('fonts/Poppins-SemiBold.ttf')}" +
     "@font-face{font-family:'Poppins';font-weight:800;src:url('fonts/Poppins-ExtraBold.ttf')}" +
@@ -125,8 +128,8 @@ function compose(fx, d, place, theme) {
     body = "<div class='em' id='em'>" + esc(fx.emoji || "✨") + "</div>";
     script = "tl.fromTo('#em',{opacity:0,scale:.3,rotation:-25},{opacity:1,scale:1,rotation:0,duration:.35,ease:'back.out(3)'},0.02);tl.to('#em',{rotation:8,duration:.18,yoyo:true,repeat:1},0.4);tl.to('#em',{opacity:0,scale:.6,duration:.22}," + (d - 0.25).toFixed(2) + ");";
   }
-  return "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;background:transparent}" + fontFaces() +
-    "#root{position:relative;width:" + W + "px;height:" + H + "px;overflow:hidden;background:transparent;font-family:'Poppins',system-ui,sans-serif}" + css +
+  return "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;background:transparent}" + fontFaces() + brandFace(theme) +
+    "#root{position:relative;width:" + W + "px;height:" + H + "px;overflow:hidden;background:transparent;font-family:" + (theme.fontFile ? "'Marke'," : "") + "'Poppins',system-ui,sans-serif}" + css +
     "</style></head><body><div id='root' data-composition-id='root' data-width='" + W + "' data-height='" + H + "' data-start='0' data-duration='" + d.toFixed(2) + "'>" + body +
     "<script src='gsap.min.js'></script><script>const tl=gsap.timeline({paused:true});" + script + "window.__timelines=window.__timelines||{};window.__timelines['root']=tl;</script></div></body></html>";
 }
@@ -178,7 +181,7 @@ function writeProject(dir, item, theme, assetsDir) {
   fs.mkdirSync(path.join(dir, "fonts"), { recursive: true });
   fs.writeFileSync(path.join(dir, "index.html"), compose(item.fx, item.d, item.place, theme));
   fs.copyFileSync(path.join(assetsDir, "gsap.min.js"), path.join(dir, "gsap.min.js"));
-  for (const f of ["Poppins-SemiBold.ttf", "Poppins-ExtraBold.ttf", "Poppins-Black.ttf", "DMSerifDisplay-Regular.ttf"]) {
+  for (const f of ["Poppins-SemiBold.ttf", "Poppins-ExtraBold.ttf", "Poppins-Black.ttf", "DMSerifDisplay-Regular.ttf"].concat(theme.fontFile ? [theme.fontFile] : [])) {
     const src = path.join(assetsDir, "fonts", f); if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, "fonts", f));
   }
 }

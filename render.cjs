@@ -58,7 +58,14 @@ function assText(s) { return String(s || "").replace(/[{}\\]/g, "").replace(/\n/
 // ---------- Untertitel-Stile (eigene Gestaltung, freie Google-Schriften) ----------
 // font: Schriftname, size: Größe, upper/lower: Schreibweise, n: Wörter pro Einblendung,
 // plate: Hintergrund-Box, active: wie das gesprochene Wort hervorgehoben wird, emph: wie betonte Wörter aussehen
+// Schriften, die man in "Meine Brand" wählen kann (Google Fonts, OFL), mit Dateinamen auf dem Server
+const BRAND_FONTS = {
+  "Playfair Display": "PlayfairDisplay[wght].ttf", "Inter": "Inter[opsz,wght].ttf", "Outfit": "Outfit[wght].ttf", "DM Sans": "DMSans[opsz,wght].ttf",
+  "Lora": "Lora[wght].ttf", "Montserrat": "Montserrat[wght].ttf", "Poppins": "Poppins-ExtraBold.ttf", "Cormorant Garamond": "CormorantGaramond[wght].ttf",
+  "Space Grotesk": "SpaceGrotesk[wght].ttf", "Syne": "Syne[wght].ttf",
+};
 const CAPTION_STYLES = {
+  marke:       { label: "Meine Marke", font: "@brand", size: 76, n: 3, outline: 6, shadow: 0, active: "accent+grow", emph: "accent", bold: true },
   klar:        { label: "Klar",        font: "Poppins ExtraBold", size: 76, n: 3, outline: 6, shadow: 0, active: "accent+grow", emph: "accent" },
   box:         { label: "Box",         font: "Poppins Bold", size: 62, n: 3, plate: true, outline: 18, active: "accent", emph: "accent" },
   elegant:     { label: "Elegant",     font: "DM Serif Display", size: 86, n: 3, outline: 0, shadow: 3, color: "#FFF8F0", active: "bright", emph: "italic+accent" },
@@ -92,7 +99,8 @@ function caseOf(st, s) { return st.upper ? s.toLocaleUpperCase("de-DE") : st.low
 // Untertitel bauen. layout (optional) kommt aus layout.py: Kopf, Kinn und freie Zonen
 function buildAss(words, map, style, layout) {
   const key = CAPTION_STYLES[style.caption_style] ? style.caption_style : "klar";
-  const st = CAPTION_STYLES[key];
+  let st = CAPTION_STYLES[key];
+  if (st.font === "@brand") st = Object.assign({}, st, { font: BRAND_FONTS[style.brand_font] ? (style.brand_font === "Poppins" ? "Poppins ExtraBold" : style.brand_font) : "Poppins ExtraBold" });
   const accent = assColor(style.accent || "#E6007E");
   const base = assColor(st.color || "#FFFFFF");
   const dim = "&H40" + base.slice(4);           // leicht durchsichtig für noch nicht gesprochene Wörter
@@ -115,8 +123,8 @@ function buildAss(words, map, style, layout) {
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + ",0,0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
-    "Style: Hook,Poppins ExtraBold,66," + "&H00FFFFFF&" + ",&H000000FF&," + accent + "," + accent + ",0,0,0,0,100,100,0,0,3,20,0,8,110,110," + hookTop(layout) + ",1",
+    "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
+    "Style: Hook," + (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold") + ",66," + "&H00FFFFFF&" + ",&H000000FF&," + accent + "," + accent + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0,3,20,0,8,110,110," + hookTop(layout) + ",1",
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
   ];
   const kept = words.filter(w => !w.cut);
@@ -191,6 +199,7 @@ function buildFfmpegArgs(o) {
   o.images.forEach(im => { args.push("-loop", "1", "-t", String(im.dur.toFixed(2)), "-i", im.file); });
   o.sounds.forEach(sd => { args.push("-i", sd.file); });
   const fxs = o.effects || [];
+  if (o.logo) args.push("-i", o.logo);
   fxs.forEach(fx => { if (fx.gif) args.push("-stream_loop", "-1", "-i", fx.file); else args.push("-c:v", "libvpx-vp9", "-i", fx.file); }); // vp9-Decoder behält die Transparenz
   const sel = o.segs.map(s => "between(t," + s.s.toFixed(3) + "," + s.e.toFixed(3) + ")").join("+");
   const f = [];
@@ -216,7 +225,12 @@ function buildFfmpegArgs(o) {
   f.push("[" + v + "]ass='" + assPath + "':fontsdir='" + o.fontsDir + "'[vass]");
   v = "vass";
   // Effekt-Ebenen (durchsichtig) über Video und Untertitel legen
-  const fxBase = 1 + o.images.length + o.sounds.length;
+  const logoIdx = 1 + o.images.length + o.sounds.length;
+  const fxBase = logoIdx + (o.logo ? 1 : 0);
+  if (o.logo) { // Logo klein oben links, innerhalb der Sicherheitszone
+    f.push("[" + logoIdx + ":v]scale=150:150:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=aa=0.92[lg]");
+    f.push("[" + v + "][lg]overlay=x=48:y=236[vlg]"); v = "vlg";
+  }
   fxs.forEach((fx, i) => {
     if (fx.gif) { // GIF als Karte mit weißem Rand, sanft ein- und ausgeblendet, mittig über dem Platz
       const w = fx.width || 620;
@@ -255,4 +269,4 @@ function buildFfmpegArgs(o) {
   return args;
 }
 
-module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, SOUNDS, CAPTION_STYLES, LOOKS, W, H, FPS };
+module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, SOUNDS, CAPTION_STYLES, LOOKS, BRAND_FONTS, W, H, FPS };
