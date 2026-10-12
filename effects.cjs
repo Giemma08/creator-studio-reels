@@ -17,6 +17,7 @@ const EFFECTS = {
   vergleich:  { label: "Vorher/Nachher-Karte", needs: "ein Vorher und ein Nachher", minDur: 2.6, maxDur: 5 },
   nachricht:  { label: "Nachrichten-Verlauf", needs: "ein Gespräch oder eine Anfrage", minDur: 2.6, maxDur: 5 },
   emoji:      { label: "Emoji-Sticker", needs: "ein Gefühl oder eine Pointe", minDur: 1, maxDur: 1.8 },
+  gif:        { label: "GIF", needs: "eine Reaktion oder Pointe", minDur: 1.6, maxDur: 2.6 },
 };
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -141,6 +142,7 @@ function neededHeight(fx) {
   if (fx.type === "vergleich") return 110 + 52 * Math.ceil(Math.max(String(fx.vorher || "").length, String(fx.nachher || "").length) / 14);
   if (fx.type === "nachricht") return 30 + 120 * Math.min(3, (fx.nachrichten || []).length);
   if (fx.type === "emoji") return 240;
+  if (fx.type === "gif") return Math.round(620 * (Number(fx.h) || 270) / (Number(fx.w) || 480)) + 16;
   return 180;
 }
 
@@ -149,7 +151,7 @@ function planEffects(effects, words, map, layout) {
   const out = [];
   let lastEnd = -1;
   for (const fx of (effects || []).slice(0, 3)) {
-    if (!EFFECTS[fx.type] || fx.off) continue;
+    if (!EFFECTS[fx.type] || fx.off || (fx.type === "gif" && !fx.mp4)) continue;
     const startW = words[fx.von] || words[fx.wort];
     if (!startW || startW.cut) continue;
     const endW = words[fx.bis] || startW;

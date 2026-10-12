@@ -117,7 +117,8 @@ async function aiPlan(job, words) {
     "'diagramm' (es geht um Wachstum oder Entwicklung: von, bis, titel höchstens 3 Wörter, wert nur wenn gesagt), " +
     "'vergleich' (ein Vorher und ein Nachher werden genannt: von, bis, vorher und nachher je höchstens 5 Wörter), " +
     "'nachricht' (eine Nachricht, Anfrage oder ein Gespräch wird erzählt: von, bis, nachrichten: 2 bis 3 kurze Sätze abwechselnd), " +
-    "'emoji' (eine Pointe oder ein starkes Gefühl: wort, emoji genau ein passendes Emoji). Erfinde keine Zahlen, Namen oder Ergebnisse. Lieber kein Effekt als ein unpassender.\n" +
+    "'emoji' (eine Pointe oder ein starkes Gefühl: wort, emoji genau ein passendes Emoji), " +
+    "'gif' (eine Reaktion, Pointe oder Übertreibung, zu der ein bekanntes Reaktions-GIF passt: wort, suche = 1 bis 3 englische Suchwörter wie 'mind blown' oder 'happy dance'). Erfinde keine Zahlen, Namen oder Ergebnisse. Lieber kein Effekt als ein unpassender.\n" +
     "Antworte ausschließlich mit JSON: {\"schnitte\":[[0,0]],\"hook_titel\":\"\",\"betont\":[0],\"zooms\":[0],\"toene\":[{\"i\":0,\"ton\":\"pop\"}],\"bild_ideen\":[{\"i\":0,\"idee\":\"\"}],\"effekte\":[{\"type\":\"zahl\",\"wort\":0,\"wert\":\"\",\"label\":\"\"}]}";
   const res = await fetch(OPENAI + "/v1/responses", {
     method: "POST", headers: { Authorization: "Bearer " + job.openai_key, "Content-Type": "application/json" },
@@ -154,6 +155,16 @@ async function render(job) {
   const planned = E.planEffects((job.style && job.style.effects) || [], words, map, layout);
   for (let i = 0; i < planned.length; i++) {
     const it = planned[i], fxDir = path.join(dir, "fx" + i);
+    if (it.fx.type === "gif") { // GIF laden und direkt mit ffmpeg einsetzen
+      try {
+        if (!/^https:\/\/media\d?\.giphy\.com\//.test(it.fx.mp4 || "")) throw new Error("ungültige GIF-Adresse");
+        const r = await fetch(it.fx.mp4); if (!r.ok) throw new Error("GIF nicht ladbar " + r.status);
+        const gf = path.join(dir, "gif" + i + ".mp4"); fs.writeFileSync(gf, Buffer.from(await r.arrayBuffer()));
+        effects.push({ file: gf, t0: it.t0, d: it.d, gif: true, top: it.place.top, width: 620 });
+        if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
+      } catch (e) { console.log("GIF übersprungen", e.message); }
+      continue;
+    }
     try {
       E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE" }, ASSET_DIR);
       await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);

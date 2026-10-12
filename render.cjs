@@ -191,7 +191,7 @@ function buildFfmpegArgs(o) {
   o.images.forEach(im => { args.push("-loop", "1", "-t", String(im.dur.toFixed(2)), "-i", im.file); });
   o.sounds.forEach(sd => { args.push("-i", sd.file); });
   const fxs = o.effects || [];
-  fxs.forEach(fx => { args.push("-c:v", "libvpx-vp9", "-i", fx.file); }); // vp9-Decoder behält die Transparenz
+  fxs.forEach(fx => { if (fx.gif) args.push("-stream_loop", "-1", "-i", fx.file); else args.push("-c:v", "libvpx-vp9", "-i", fx.file); }); // vp9-Decoder behält die Transparenz
   const sel = o.segs.map(s => "between(t," + s.s.toFixed(3) + "," + s.e.toFixed(3) + ")").join("+");
   const f = [];
   f.push("[0:v]fps=" + FPS + ",scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + ",setsar=1,select='" + sel + "',setpts=N/" + FPS + "/TB" + (o.grade ? "," + o.grade : "") + "[v0]");
@@ -218,6 +218,12 @@ function buildFfmpegArgs(o) {
   // Effekt-Ebenen (durchsichtig) über Video und Untertitel legen
   const fxBase = 1 + o.images.length + o.sounds.length;
   fxs.forEach((fx, i) => {
+    if (fx.gif) { // GIF als Karte mit weißem Rand, sanft ein- und ausgeblendet, mittig über dem Platz
+      const w = fx.width || 620;
+      f.push("[" + (fxBase + i) + ":v]fps=" + FPS + ",trim=duration=" + fx.d.toFixed(3) + ",setpts=PTS-STARTPTS,scale=" + w + ":-2,pad=iw+16:ih+16:8:8:white,format=yuva420p,fade=t=in:st=0:d=0.18:alpha=1,fade=t=out:st=" + Math.max(0, fx.d - 0.22).toFixed(3) + ":d=0.22:alpha=1,setpts=PTS+" + fx.t0.toFixed(3) + "/TB[fx" + i + "]");
+      f.push("[" + v + "][fx" + i + "]overlay=x=(W-w)/2:y=" + (fx.top || 300) + ":eof_action=pass:enable='between(t," + fx.t0.toFixed(3) + "," + (fx.t0 + fx.d).toFixed(3) + ")'[vf" + i + "]");
+      v = "vf" + i; return;
+    }
     f.push("[" + (fxBase + i) + ":v]format=yuva420p,setpts=PTS-STARTPTS+" + fx.t0.toFixed(3) + "/TB[fx" + i + "]");
     f.push("[" + v + "][fx" + i + "]overlay=0:0:eof_action=pass:enable='between(t," + fx.t0.toFixed(3) + "," + (fx.t0 + fx.d).toFixed(3) + ")'[vf" + i + "]");
     v = "vf" + i;

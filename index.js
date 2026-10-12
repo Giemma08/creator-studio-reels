@@ -51,6 +51,7 @@ export default {
       if (p === "/api/reels/part" && m === "PUT") return await routePart(request, env, url);
       if (p === "/api/reels/complete" && m === "POST") return await routeComplete(request, env, url);
       if (p === "/api/reels/save" && m === "POST") return await routeSave(request, env);
+      if (p === "/api/reels/gifs" && m === "GET") return await routeGifs(request, env, url);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
       return json({ error: "not_found" }, 404);
@@ -314,7 +315,7 @@ async function routeComplete(request, env, url) {
 
 const CAPTION_STYLES = ["klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
-const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji"];
+const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif"];
 function sanitizeEffects(list) {
   const s = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").slice(0, n);
   const i = v => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n < 3000 ? n : undefined; };
@@ -330,10 +331,42 @@ function sanitizeEffects(list) {
     if (x.type === "vergleich") { o.vorher = s(x.vorher, 50); o.nachher = s(x.nachher, 50); }
     if (x.type === "nachricht") { o.nachrichten = (Array.isArray(x.nachrichten) ? x.nachrichten : []).slice(0, 3).map(m => s(m, 70)).filter(Boolean); }
     if (x.type === "emoji") { o.emoji = Array.from(String(x.emoji || "")).slice(0, 2).join(""); }
+    if (x.type === "gif") {
+      const giphy = u => /^https:\/\/media\d?\.giphy\.com\/[A-Za-z0-9_\/.?=&-]+$/.test(String(u || "")) ? String(u) : "";
+      o.suche = s(x.suche, 40); o.gif_id = /^[A-Za-z0-9]{1,40}$/.test(String(x.gif_id || "")) ? String(x.gif_id) : "";
+      o.mp4 = giphy(x.mp4); o.preview = giphy(x.preview); o.titel = s(x.titel, 60);
+      o.w = Math.max(1, Math.min(2000, Number(x.w) || 480)); o.h = Math.max(1, Math.min(2000, Number(x.h) || 270));
+    }
     if (x.off) o.off = true;
     return o;
   }).filter(o => o.von !== undefined || o.wort !== undefined);
 }
+
+// ---------------- GIFs über Giphy (Powered by GIPHY) ----------------
+async function giphySearch(env, q, limit) {
+  if (!env.GIPHY_API_KEY || !q) return [];
+  const u = "https://api.giphy.com/v1/gifs/search?api_key=" + encodeURIComponent(env.GIPHY_API_KEY) + "&q=" + encodeURIComponent(q) + "&limit=" + (limit || 12) + "&rating=g&lang=de";
+  const r = await fetch(u); if (!r.ok) return [];
+  const d = await r.json().catch(() => ({}));
+  return (d.data || []).map(g => {
+    const im = g.images || {}; const v = im.fixed_height || im.original || {}; const pr = im.fixed_width_small || im.fixed_height_small || v;
+    return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), mp4: v.mp4 || (im.original && im.original.mp4) || "", preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
+  }).filter(g => g.mp4);
+}
+async function routeGifs(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  if (!env.GIPHY_API_KEY) return json({ error: "gifs_off" }, 503);
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 50);
+  return json({ gifs: await giphySearch(env, q, 12) });
+}
+// Für KI-Vorschläge ohne Auswahl das erste passende GIF vorwählen
+async function preselectGifs(env, effects) {
+  for (const fx of effects || []) {
+    if (fx && fx.type === "gif" && !fx.mp4 && fx.suche) { const g = (await giphySearch(env, fx.suche, 1))[0]; if (g) Object.assign(fx, g); }
+  }
+  return effects;
+}
+
 function sanitizeStyle(st) {
   st = st && typeof st === "object" ? st : {};
   const hex = v => /^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v) : undefined;
@@ -476,7 +509,7 @@ async function routeInternal(request, env, url) {
     }
     if (b.phase === "analyze") {
       await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, has_audio: !!b.has_audio, words: sanitizeWords(b.words), hook_titel: String(b.hook_titel || "").slice(0, 120), bild_ideen: Array.isArray(b.bild_ideen) ? b.bild_ideen.slice(0, 5) : [],
-        style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: b.effekte || [] })) });
+        style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: await preselectGifs(env, b.effekte || []) })) });
       // Kosten protokollieren: Transkription + Schnittplan + Rechenzeit
       const rate = await usdEur(env);
       const mins = (Number(b.duration) || 0) / 60, u = b.usage || {};
