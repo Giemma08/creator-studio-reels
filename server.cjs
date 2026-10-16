@@ -57,7 +57,7 @@ async function getInput(job, dir) {
 // ---------- Analyse ----------
 async function analyze(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
-  const input = await getInput(job, dir);
+  const input = job.clip ? await cutClip(job, dir) : await getInput(job, dir);
   const info = await probe(input);
   if (info.duration > (job.max_seconds || 185)) throw new Error("too_long");
   let words = [];
@@ -299,17 +299,126 @@ async function transcribe(job) {
   return { status: "ready", duration: info.duration, text: texts.join("\n\n") };
 }
 
+
+// ---------- Video in Reels verwandeln ----------
+// Langes Video in 10-Minuten-Stücken mit Wortzeiten abschreiben, in Sätze gliedern, KIRA die besten Stellen wählen lassen
+async function clipScan(job) {
+  const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
+  const input = await getInput(job, dir);
+  const info = await probe(input);
+  if (info.duration > (job.max_seconds || 3 * 3600)) throw new Error("too_long");
+  if (!info.hasAudio) throw new Error("Das Video enthält keine Tonspur.");
+  const CH = 600, n = Math.max(1, Math.ceil(info.duration / CH)), words = [];
+  for (let i = 0; i < n; i++) {
+    const f = path.join(dir, "c" + i + ".mp3");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(i * CH), "-t", String(CH), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", f]);
+    let tr = null, tries = 0, last = "";
+    while (!tr && tries++ < 3) {
+      const fd = new FormData();
+      fd.append("file", new Blob([fs.readFileSync(f)], { type: "audio/mpeg" }), "c" + i + ".mp3");
+      fd.append("model", "whisper-1"); fd.append("response_format", "verbose_json"); fd.append("timestamp_granularities[]", "word");
+      if (job.lang) fd.append("language", job.lang);
+      const res = await fetch(OPENAI + "/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + job.openai_key }, body: fd });
+      if (res.ok) tr = await res.json(); else { last = res.status + " " + (await res.text()).slice(0, 200); await new Promise(r => setTimeout(r, 2000 * tries)); }
+    }
+    if (!tr) throw new Error("transcribe " + last);
+    const ws = (tr.words || []).map(w => ({ w: String(w.word).trim(), s: Number(w.start) + i * CH, e: Number(w.end) + i * CH })).filter(w => w.w);
+    if (tr.text) attachPunctuation(ws, tr.text);
+    ws.forEach(w => words.push(w));
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+  const sentences = toSentences(words);
+  const clips = sentences.length >= 3 ? await aiClips(job, sentences) : [];
+  return { status: "clips_ready", duration: info.duration, sentences: sentences.map(x => ({ t: x.t, s: +x.s.toFixed(2), e: +x.e.toFixed(2) })), clips };
+}
+function toSentences(words) {
+  const out = []; let cur = [];
+  const flush = () => { if (cur.length) { out.push({ t: cur.map(w => w.w).join(" "), s: cur[0].s, e: cur[cur.length - 1].e }); cur = []; } };
+  words.forEach((w, i) => {
+    cur.push(w);
+    const next = words[i + 1];
+    const end = /[.!?…]["»“”']?$/.test(w.w) || (next && next.s - w.e > 1.2) || cur.length >= 45;
+    if (end) flush();
+  });
+  flush(); return out;
+}
+function mmss(t) { t = Math.max(0, Math.round(t)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); }
+async function aiClips(job, sentences) {
+  let list = sentences.map((x, i) => i + " [" + mmss(x.s) + "] " + x.t).join("\n");
+  if (list.length > 150000) list = list.slice(0, 150000);
+  const instructions = "Du bist eine erfahrene Social-Media-Cutterin. Du bekommst das Transkript eines langen Videos (Masterclass, Live, Webinar oder Gespräch) Satz für Satz, mit Nummer und Zeitmarke. " +
+    "Finde die 5 bis 10 stärksten Stellen, die jeweils FÜR SICH ALLEIN als Instagram-Reel funktionieren. Eine gute Stelle: beginnt mit einem Satz, der sofort neugierig macht oder eine klare Aussage trifft (ohne Vorwissen verständlich), entwickelt EINEN Gedanken (eine Erkenntnis, eine kurze Geschichte, eine klare Meinung, eine Liste oder einen Fehler mit Lösung) und endet an einem natürlichen Schlusspunkt (Pointe, Erkenntnis, Fazit). " +
+    "Länge jeweils 20 bis 90 Sekunden, höchstens 120. Keine Stellen, die mitten im Gedanken anfangen oder auf Folien, Bildschirm oder frühere Teile verweisen ('wie ich vorhin sagte', 'auf dieser Folie'). Keine Begrüßung, keine Technik-Probleme, keine Organisationsdinge. Stellen dürfen sich nicht überschneiden. " +
+    "Antworte NUR mit JSON: {\"clips\":[{\"von\":0,\"bis\":0,\"titel\":\"Titel für das Reel, höchstens 8 Wörter\",\"hook\":\"der erste Satz der Stelle\",\"warum\":\"1 Satz in einfacher Sprache, warum diese Stelle als Reel funktioniert\",\"typ\":\"wissen|persoenlich|autoritaet|verkauf|leadmagnet\",\"punkte\":8}]} " +
+    "von und bis sind Satznummern (inklusive). punkte: 1 bis 10, wie stark die Stelle als Reel ist. Schreibe Titel, Hook und Begründung in der Sprache des Transkripts.";
+  const res = await fetch(OPENAI + "/v1/responses", { method: "POST", headers: { Authorization: "Bearer " + job.openai_key, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: job.model, instructions, input: [{ role: "user", content: list }], max_output_tokens: 3500 }) });
+  if (!res.ok) { console.log("Clip-Auswahl Fehler", res.status, (await res.text()).slice(0, 300)); return []; }
+  const data = await res.json();
+  let text = data.output_text || ""; if (!text && Array.isArray(data.output)) data.output.forEach(o => (o.content || []).forEach(c => { if (c.type === "output_text") text += c.text; }));
+  const usage = data.usage || {}; job.usage = { input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0 };
+  let d = {}; try { const m = text.match(/\{[\s\S]*\}/); d = m ? JSON.parse(m[0]) : {}; } catch (e) { d = {}; }
+  const N = sentences.length, used = [];
+  const items = (Array.isArray(d.clips) ? d.clips : []).map(c => {
+    let a = Math.max(0, Math.min(N - 1, c.von | 0)), b = Math.max(0, Math.min(N - 1, c.bis | 0)); if (b < a) [a, b] = [b, a];
+    return { von: a, bis: b, start: +Math.max(0, sentences[a].s - 0.15).toFixed(2), end: +(sentences[b].e + 0.25).toFixed(2), titel: String(c.titel || "").slice(0, 100), hook: String(c.hook || sentences[a].t).slice(0, 300), warum: String(c.warum || "").slice(0, 300), typ: String(c.typ || "wissen").slice(0, 20), punkte: Math.max(1, Math.min(10, Number(c.punkte) || 5)) };
+  }).filter(c => c.end - c.start >= 15 && c.end - c.start <= 150).sort((x, y) => y.punkte - x.punkte)
+    .filter(c => { if (used.some(u => c.von <= u.bis && c.bis >= u.von)) return false; used.push(c); return true; });
+  return items.slice(0, 10).sort((x, y) => x.start - y.start);
+}
+// Ausgewählte Stelle direkt aus dem Original schneiden (ohne das ganze Video zu laden) und ins Hochformat um das Gesicht bringen
+async function cutClip(job, dir) {
+  const url = job.base + "/internal/reels/input/" + job.id, H = "x-internal: " + job.token + "\r\n";
+  const s0 = Math.max(0, Number(job.clip.start) || 0), dur = Math.max(5, Math.min(185, (Number(job.clip.end) || 0) - s0));
+  const pj = JSON.parse(await run("ffprobe", ["-v", "error", "-headers", H, "-select_streams", "v:0", "-show_entries", "stream=width,height:stream_tags=rotate", "-of", "json", url]));
+  const st = (pj.streams || [])[0] || {}; let w = Number(st.width) || 1920, h = Number(st.height) || 1080;
+  if (st.tags && /^-?90$|^-?270$/.test(String(st.tags.rotate || ""))) [w, h] = [h, w];
+  let vf = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920";
+  if (w / h > 0.6) {
+    // Gesicht in einigen Bildern suchen und den Ausschnitt danach ausrichten
+    const frames = [];
+    for (let k = 0; k < 6; k++) { const f = path.join(dir, "f" + k + ".jpg"); try { await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", H, "-ss", String(s0 + dur * (k + 0.5) / 6), "-i", url, "-frames:v", "1", "-vf", "scale=960:-2", f]); frames.push(f); } catch (e) {} }
+    let cx = 0.5;
+    try { const out = await run("python3", ["-c", FACE_PY].concat(frames)); const v = parseFloat(String(out).trim()); if (v >= 0 && v <= 1) cx = v; } catch (e) { console.log("Gesichtssuche", e.message.slice(0, 200)); }
+    const cw = Math.min(w, Math.round(h * 9 / 16 / 2) * 2), x = Math.round(Math.max(0, Math.min(w - cw, cx * w - cw / 2)));
+    vf = "crop=" + cw + ":" + h + ":" + x + ":0,scale=1080:1920,setsar=1";
+  }
+  const out = path.join(dir, "input");
+  await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", H, "-ss", s0.toFixed(2), "-i", url, "-t", dur.toFixed(2), "-vf", vf, "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-f", "mp4", out]);
+  await upload(job.base + "/internal/reels/output/" + job.id + "/input.mp4", hdr(job), out, "video/mp4");
+  return out;
+}
+const FACE_PY = [
+  "import sys, cv2",
+  "c = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')",
+  "hog = cv2.HOGDescriptor(); hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())",
+  "fx, px = [], []",
+  "for f in sys.argv[1:]:",
+  "    im = cv2.imread(f)",
+  "    if im is None: continue",
+  "    W = im.shape[1]",
+  "    g = cv2.equalizeHist(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY))",
+  "    fs = c.detectMultiScale(g, 1.08, 5, minSize=(22, 22))",
+  "    if len(fs):",
+  "        x, y, w, h = max(fs, key=lambda r: r[2] * r[3]); fx.append((x + w / 2) / W); continue",
+  "    rs, _ = hog.detectMultiScale(im, winStride=(8, 8), padding=(8, 8), scale=1.05)",
+  "    if len(rs):",
+  "        x, y, w, h = max(rs, key=lambda r: r[2] * r[3]); px.append((x + w / 2) / W)",
+  "xs = sorted(fx) if fx else sorted(px)",
+  "print(xs[len(xs) // 2] if xs else 0.5)"
+].join("\n");
+
 // ---------- HTTP ----------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") { res.end("ok"); return; }
-  if (req.method !== "POST" || !["/analyze", "/render", "/transcribe"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
+  if (req.method !== "POST" || !["/analyze", "/render", "/transcribe", "/clips"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
   let body = "";
   req.on("data", d => { body += d; if (body.length > 5e6) req.destroy(); });
   req.on("end", () => {
     let job; try { job = JSON.parse(body); } catch { res.statusCode = 400; res.end(); return; }
     if (!job.id || !/^[0-9a-f-]{36}$/.test(job.id) || !job.base || !job.token) { res.statusCode = 400; res.end(); return; }
     res.statusCode = 202; res.end(JSON.stringify({ accepted: true }));
-    const fn = req.url === "/analyze" ? analyze : req.url === "/transcribe" ? transcribe : render;
+    const fn = req.url === "/analyze" ? analyze : req.url === "/transcribe" ? transcribe : req.url === "/clips" ? clipScan : render;
     const t0 = Date.now();
     fn(job).then(r => callback(job, Object.assign({ phase: req.url.slice(1), seconds: (Date.now() - t0) / 1000, usage: job.usage || null }, r)))
       .catch(e => { console.log("Fehler", e.stack || e); callback(job, { phase: req.url.slice(1), status: "error", error: String(e.message || e).slice(0, 300) }); });

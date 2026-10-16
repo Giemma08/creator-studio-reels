@@ -47,7 +47,8 @@ export default {
       if (missing.length) { console.log("Fehlende Einstellungen:", missing.join(", ")); return json({ error: "config" }, 500); }
       if (p === "/api/reels" && m === "GET") return await routeList(request, env, url);
       if (p === "/api/reels" && m === "DELETE") return await routeDelete(request, env, url);
-      if (p === "/api/reels/start" && m === "POST") return await routeStart(request, env);
+        if (p === "/api/reels/start" && m === "POST") return await routeStart(request, env);
+      if (p === "/api/reels/clips/make" && m === "POST") return await routeClipsMake(request, env, url);
       if (p === "/api/reels/part" && m === "PUT") return await routePart(request, env, url);
       if (p === "/api/reels/complete" && m === "POST") return await routeComplete(request, env, url);
       if (p === "/api/reels/save" && m === "POST") return await routeSave(request, env);
@@ -208,6 +209,7 @@ async function mediaUrl(env, origin, id, name) {
 async function publicJob(env, origin, j, full) {
   const out = { id: j.id, created_at: j.created_at, updated_at: j.updated_at, title: j.title, status: j.status, duration: j.duration, renders: j.renders, length: j.length, error: j.error, kind: j.kind || "reel" };
   if (j.kind === "transcript") { out.has_text = !!j.transcript; return out; }
+  if (j.kind === "clips") { out.thumb = ""; if (full) { out.clips = j.clips || {}; out.input = await mediaUrl(env, origin, j.id, "input"); } return out; }
   out.thumb = j.status !== "uploading" && j.status !== "analyzing" && j.status !== "error" ? await mediaUrl(env, origin, j.id, j.status === "done" ? "final.jpg" : "thumb.jpg") : "";
   if (full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
@@ -224,7 +226,7 @@ async function routeList(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const id = url.searchParams.get("id");
   if (id) { const j = await getJob(env, s, id); return j ? json({ job: await publicJob(env, url.origin, j, true) }) : json({ error: "not_found" }, 404); }
-  const kindFilter = url.searchParams.get("kind") === "transcript" ? "&kind=eq.transcript" : "&kind=eq.reel";
+  const kindFilter = url.searchParams.get("kind") === "transcript" ? "&kind=eq.transcript" : "&kind=in.(reel,clips)";
   const rows = await db(env, "reel_jobs?user_id=eq." + s.user.id + kindFilter + "&select=id,created_at,updated_at,title,status,duration,renders,length,error,kind&order=created_at.desc&limit=50");
   const list = [];
   for (const j of rows || []) list.push(await publicJob(env, url.origin, j, false));
@@ -235,15 +237,15 @@ async function routeStart(request, env) {
   const s = await session(request, env); if (s.err) return s.err;
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   if (!(Number(b.size) > 0) || Number(b.size) > MAX_BYTES) return json({ error: "file_size" }, 400);
-  const isTranscript = b.kind === "transcript";
+  const isTranscript = b.kind === "transcript", isClips = b.kind === "clips", isLong = isTranscript || isClips;
   const lim = tierLimits(s.acc);
-  if (isTranscript) {
+  if (isLong) {
     if (Number(b.minutes) > lim.minutes) return json({ error: "too_long_plan", limit_min: lim.minutes, plan: lim.plan }, 403);
     if (Number(b.size) > lim.bytes) return json({ error: "file_size_plan", limit_gb: lim.bytes / 1073741824, plan: lim.plan }, 403);
   } else if (Number(b.size) > 1.5 * 1024 * 1024 * 1024) return json({ error: "file_size" }, 400);
-  const cost = await db(env, "action_costs?action=eq." + (isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
-  const per = cost && cost[0] ? Number(cost[0].credits) : (isTranscript ? 1 : 30);
-  const need = isTranscript ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
+  const cost = await db(env, "action_costs?action=eq." + (isClips ? "clips_min" : isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
+  const per = cost && cost[0] ? Number(cost[0].credits) : (isLong ? 1 : 30);
+  const need = isLong ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
   const st = creditStatus(s.acc);
   if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
   // Speicher des Tarifs prüfen
@@ -253,7 +255,7 @@ async function routeStart(request, env) {
     const u = await db(env, "rpc/storage_usage", { method: "POST", body: { p_user: s.user.id } });
     if ((Number(Array.isArray(u) ? u[0] : u) || 0) + Number(b.size) > limit) return json({ error: "storage_full" }, 403);
   } catch (e) {}
-  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isTranscript ? "transcript" : "reel", input_bytes: Math.round(Number(b.size) || 0) } });
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isClips ? "clips" : isTranscript ? "transcript" : "reel", input_bytes: Math.round(Number(b.size) || 0) } });
   const job = rows[0];
   const mp = await env.REELS_BUCKET.createMultipartUpload(keyOf(job.id, "input"), { httpMetadata: { contentType: String(b.type || "video/mp4").slice(0, 60) } });
   await patchJob(env, job.id, { upload_id: mp.uploadId });
@@ -279,6 +281,30 @@ function tierLimits(acc) {
   if (id === "standard") return { minutes: 75, bytes: 1.5 * 1024 * 1024 * 1024, plan: "standard" };
   return { minutes: 30, bytes: 1.5 * 1024 * 1024 * 1024, plan: "start" };
 }
+// ---------- Video in Reels verwandeln: gewählte Stellen als eigene Reels anlegen ----------
+async function routeClipsMake(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
+  const src = await getJob(env, s, b.id);
+  if (!src || src.kind !== "clips" || src.status !== "clips_ready") return json({ error: "not_found" }, 404);
+  const dur = Number(src.duration) || 0;
+  const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 10).map(p => ({ start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120) })).filter(p => p.end - p.start >= 5 && p.end - p.start <= 180);
+  if (!picks.length) return json({ error: "server" }, 400);
+  const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 30;
+  const need = per * picks.length, st = creditStatus(s.acc);
+  if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
+  const style = sanitizeStyle(b.style), made = [];
+  for (const p of picks) {
+    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video" } });
+    const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break;
+    const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style } });
+    const job = rows[0];
+    try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 200, clip: { start: p.start, end: p.end } }); made.push(job.id); }
+    catch (e) { await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit" } }); await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); }
+  }
+  if (!made.length) return json({ error: "render_unavailable" }, 503);
+  return json({ ok: true, ids: made });
+}
 async function startContainer(env, origin, job, phase, extra) {
   const c = getContainer(env.RENDERER, job.id);
   const body = Object.assign({ id: job.id, base: origin, token: await hmac(env, "internal|" + job.id) }, extra || {});
@@ -299,6 +325,12 @@ async function routeComplete(request, env, url) {
   const parts = (Array.isArray(b.parts) ? b.parts : []).map(x => ({ partNumber: Number(x.partNumber), etag: String(x.etag) }));
   const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, "input"), j.upload_id);
   await mp.complete(parts);
+  if (j.kind === "clips") {
+    await patchJob(env, j.id, { status: "analyzing", upload_id: null });
+    try { await startContainer(env, url.origin, j, "clips", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "premium"), lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
+    catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
+    return json({ ok: true });
+  }
   if (j.kind === "transcript") {
     // Lange Aufnahme: nur in Text umwandeln, Credits nach der tatsächlichen Länge
     await patchJob(env, j.id, { status: "analyzing", upload_id: null });
@@ -570,7 +602,11 @@ async function routeInternal(request, env, url) {
   const parts = url.pathname.split("/"); // ["", "internal", "reels", kind, id, name]
   const kind = parts[3], id = parts[4];
   if (!validId(id) || request.headers.get("x-internal") !== await hmac(env, "internal|" + id)) return new Response("", { status: 403 });
-  if (kind === "input" && request.method === "GET") return await serveObject(env, keyOf(id, "input"), request);
+  if (kind === "input" && request.method === "GET") {
+    if (!(await env.REELS_BUCKET.head(keyOf(id, "input")))) { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); const src = r && r[0] && r[0].source_id; if (src && validId(src)) return await serveObject(env, keyOf(src, "input"), request); }
+    return await serveObject(env, keyOf(id, "input"), request);
+  }
+  if (kind === "output" && request.method === "PUT" && parts[5] === "input.mp4") { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); if (!(r && r[0] && r[0].source_id)) return new Response("", { status: 403 }); await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } }); return new Response("ok"); }
   if (kind === "asset" && request.method === "GET") {
     const key = url.searchParams.get("key") || "";
     if (!key.startsWith("jobs/" + id + "/img-")) return new Response("", { status: 403 });
@@ -585,6 +621,17 @@ async function routeInternal(request, env, url) {
   if (kind === "callback" && request.method === "POST") {
     const b = await request.json();
     const rows = await db(env, "reel_jobs?id=eq." + id + "&select=*"); const j = rows && rows[0]; if (!j) return new Response("", { status: 404 });
+    if (b.phase === "clips") {
+      if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Das Video ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
+      const mins = Math.max(1, Math.ceil((Number(b.duration) || 0) / 60));
+      const items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 12);
+      await patchJob(env, id, { status: items.length ? "clips_ready" : "error", duration: Number(b.duration) || 0, clips: { sentences: (b.sentences || []).slice(0, 4000), items }, error: items.length ? null : "In diesem Video habe ich keine Stellen gefunden, die als eigenes Reel funktionieren. Am besten eignen sich Videos, in denen du frei sprichst." });
+      const cost = await db(env, "action_costs?action=eq.clips_min&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 1;
+      try { await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: j.user_id, p_amount: mins * per, p_action: "clips_min", p_note: mins + " Minuten" } }); } catch (e) {}
+      const rate = await usdEur(env); const u = b.usage || {};
+      await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "clips_min", model_id: "whisper-1", input_tokens: Number(u.input_tokens) || 0, cached_tokens: 0, output_tokens: Number(u.output_tokens) || 0, cost_eur: Math.round((mins * 0.006 + (Number(u.input_tokens) || 0) * 0.000002 + (Number(u.output_tokens) || 0) * 0.00001) * rate * 1e6) / 1e6, credits: mins * per } }).catch(() => {});
+      return new Response("ok");
+    }
     if (b.phase === "transcribe") {
       if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Die Aufnahme ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
       const mins = Math.max(1, Math.ceil((Number(b.duration) || 0) / 60));
