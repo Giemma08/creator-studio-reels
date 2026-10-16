@@ -135,6 +135,8 @@ function buildAss(words, map, style, layout) {
   if (style.captions === false) return lines.join("\n") + "\n";
   const hidden = (style.hide_captions || []).map(r => [Number(r[0]), Number(r[1])]);
   const isHidden = t => hidden.some(r => t >= r[0] && t < r[1]);
+  const moves = (style.caption_moves || []).map(r => [Number(r[0]), Number(r[1]), Number(r[2])]);
+  const moveFor = t => { const mv = moves.find(r => t >= r[0] && t < r[1]); return mv ? "{\\an8\\pos(" + (W / 2) + "," + Math.round(mv[2]) + ")}" : ""; };
   // Gruppen bilden
   const groups = []; let g = [];
   for (let i = 0; i < kept.length; i++) {
@@ -179,7 +181,7 @@ function buildAss(words, map, style, layout) {
       }).filter(x => x !== null);
       const pop = i === 0 && !st.pop ? "{\\fscx92\\fscy92\\t(0,90,\\fscx100\\fscy100)}" : "";
       const glow = st.glow ? "{\\blur6}" : "";
-      lines.push("Dialogue: 0," + assTime(start) + "," + assTime(end) + ",Cap,,0,0,0,," + glow + pop + parts.join(" "));
+      lines.push("Dialogue: 0," + assTime(start) + "," + assTime(end) + ",Cap,,0,0,0,," + moveFor(start) + glow + pop + parts.join(" "));
     }
   }
   return lines.join("\n") + "\n";
@@ -199,7 +201,9 @@ function buildFfmpegArgs(o) {
   o.images.forEach(im => { args.push("-loop", "1", "-t", String(im.dur.toFixed(2)), "-i", im.file); });
   o.sounds.forEach(sd => { args.push("-i", sd.file); });
   const fxs = o.effects || [];
+  const unders = o.underlays || []; // freigestellte Abschnitte (deckend), liegen unter Untertiteln und Grafiken
   if (o.logo) args.push("-i", o.logo);
+  unders.forEach(u => { args.push("-i", u.file); });
   fxs.forEach(fx => { if (fx.gif) args.push("-stream_loop", "-1", "-i", fx.file); else args.push("-c:v", "libvpx-vp9", "-i", fx.file); }); // vp9-Decoder behält die Transparenz
   const sel = o.segs.map(s => "between(t," + s.s.toFixed(3) + "," + s.e.toFixed(3) + ")").join("+");
   const f = [];
@@ -221,12 +225,21 @@ function buildFfmpegArgs(o) {
     f.push("[" + v + "][im" + i + "]overlay=x=(W-w)/2:y=" + y + ":eof_action=pass:enable='between(t," + im.t.toFixed(3) + "," + (im.t + d).toFixed(3) + ")'[vi" + i + "]");
     v = "vi" + i;
   });
-  const assPath = o.assFile.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "");
-  f.push("[" + v + "]ass='" + assPath + "':fontsdir='" + o.fontsDir + "'[vass]");
-  v = "vass";
+  // Reihenfolge der Eingänge: Video, Bilder, Töne, Logo, freigestellte Abschnitte, Effekt-Ebenen
+  const underBase = 1 + o.images.length + o.sounds.length + (o.logo ? 1 : 0);
+  unders.forEach((u, i) => {
+    f.push("[" + (underBase + i) + ":v]scale=" + W + ":" + H + ",setsar=1,setpts=PTS-STARTPTS+" + u.t0.toFixed(3) + "/TB[un" + i + "]");
+    f.push("[" + v + "][un" + i + "]overlay=0:0:eof_action=pass:enable='between(t," + u.t0.toFixed(3) + "," + (u.t0 + u.d - 0.001).toFixed(3) + ")'[vu" + i + "]");
+    v = "vu" + i;
+  });
+  if (o.assFile) {
+    const assPath = o.assFile.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "");
+    f.push("[" + v + "]ass='" + assPath + "':fontsdir='" + o.fontsDir + "'[vass]");
+    v = "vass";
+  }
   // Effekt-Ebenen (durchsichtig) über Video und Untertitel legen
   const logoIdx = 1 + o.images.length + o.sounds.length;
-  const fxBase = logoIdx + (o.logo ? 1 : 0);
+  const fxBase = logoIdx + (o.logo ? 1 : 0) + unders.length;
   if (o.logo) { // Logo klein oben links, innerhalb der Sicherheitszone
     f.push("[" + logoIdx + ":v]scale=150:150:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=aa=0.92[lg]");
     f.push("[" + v + "][lg]overlay=x=48:y=236[vlg]"); v = "vlg";

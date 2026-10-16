@@ -15,8 +15,8 @@ export class ReelRenderer extends Container {
 }
 
 const LANG_NAMES = { de: "Deutsch", en: "English", fr: "Français", it: "Italiano", es: "Español", pt: "Português", nl: "Nederlands", sv: "Svenska", ca: "Català" };
-const MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
-const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg"];
+const MAX_BYTES = 4 * 1024 * 1024 * 1024;
+const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg", "check.jpg"];
 const IMG_TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 
 export default {
@@ -52,6 +52,7 @@ export default {
       if (p === "/api/reels/complete" && m === "POST") return await routeComplete(request, env, url);
       if (p === "/api/reels/save" && m === "POST") return await routeSave(request, env);
       if (p === "/api/reels/gifs" && m === "GET") return await routeGifs(request, env, url);
+      if (p === "/api/reels/notes" && m === "POST") return await routeNotes(request, env, url);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
       return json({ error: "not_found" }, 404);
@@ -211,7 +212,7 @@ async function publicJob(env, origin, j, full) {
   if (full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
     out.input = await mediaUrl(env, origin, j.id, "input");
-    if (j.status === "done") out.final = await mediaUrl(env, origin, j.id, "final.mp4");
+    if (j.status === "done") { out.final = await mediaUrl(env, origin, j.id, "final.mp4"); out.check = await mediaUrl(env, origin, j.id, "check.jpg"); out.report = Array.isArray(j.report) ? j.report : []; }
     const imgs = {};
     for (const w of (j.words || [])) if (w && w.image && w.image.key && !imgs[w.image.key]) imgs[w.image.key] = await mediaUrl(env, origin, j.id, w.image.key.split("/").pop());
     out.images = imgs;
@@ -235,7 +236,11 @@ async function routeStart(request, env) {
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   if (!(Number(b.size) > 0) || Number(b.size) > MAX_BYTES) return json({ error: "file_size" }, 400);
   const isTranscript = b.kind === "transcript";
-  if (isTranscript) { const feat = (s.acc.plans && s.acc.plans.features) || {}; if (!feat.pro && !s.acc.is_admin) return json({ error: "pro_only" }, 403); }
+  const lim = tierLimits(s.acc);
+  if (isTranscript) {
+    if (Number(b.minutes) > lim.minutes) return json({ error: "too_long_plan", limit_min: lim.minutes, plan: lim.plan }, 403);
+    if (Number(b.size) > lim.bytes) return json({ error: "file_size_plan", limit_gb: lim.bytes / 1073741824, plan: lim.plan }, 403);
+  } else if (Number(b.size) > 1.5 * 1024 * 1024 * 1024) return json({ error: "file_size" }, 400);
   const cost = await db(env, "action_costs?action=eq." + (isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
   const per = cost && cost[0] ? Number(cost[0].credits) : (isTranscript ? 1 : 30);
   const need = isTranscript ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
@@ -266,6 +271,14 @@ async function routePart(request, env, url) {
   return json({ partNumber: part.partNumber, etag: part.etag });
 }
 
+// Grenzen je Tarif für lange Aufnahmen (Dein Material) und Video in Reels verwandeln
+function tierLimits(acc) {
+  const id = String(acc.plan_id || "").toLowerCase(), feat = (acc.plans && acc.plans.features) || {};
+  const pro = acc.is_admin || feat.pro || id === "pro";
+  if (pro) return { minutes: 150, bytes: 4 * 1024 * 1024 * 1024, plan: "pro" };
+  if (id === "standard") return { minutes: 75, bytes: 1.5 * 1024 * 1024 * 1024, plan: "standard" };
+  return { minutes: 30, bytes: 1.5 * 1024 * 1024 * 1024, plan: "start" };
+}
 async function startContainer(env, origin, job, phase, extra) {
   const c = getContainer(env.RENDERER, job.id);
   const body = Object.assign({ id: job.id, base: origin, token: await hmac(env, "internal|" + job.id) }, extra || {});
@@ -289,7 +302,7 @@ async function routeComplete(request, env, url) {
   if (j.kind === "transcript") {
     // Lange Aufnahme: nur in Text umwandeln, Credits nach der tatsächlichen Länge
     await patchJob(env, j.id, { status: "analyzing", upload_id: null });
-    try { await startContainer(env, url.origin, j, "transcribe", { openai_key: env.OPENAI_API_KEY, lang: s.acc.content_lang || "de", max_seconds: 3 * 3600 + 60 }); }
+    try { await startContainer(env, url.origin, j, "transcribe", { openai_key: env.OPENAI_API_KEY, lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
     catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
     return json({ ok: true });
   }
@@ -316,7 +329,8 @@ async function routeComplete(request, env, url) {
 const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "Montserrat", "Poppins", "Cormorant Garamond", "Space Grotesk", "Syne"];
 const CAPTION_STYLES = ["marke", "klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
-const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif"];
+const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif", "hinter", "spotlight", "greenscreen", "popout", "lichtaus"];
+const CUTOUT_TYPES = ["hinter", "spotlight", "greenscreen", "popout", "lichtaus"];
 function sanitizeEffects(list) {
   const s = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").slice(0, n);
   const i = v => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n < 3000 ? n : undefined; };
@@ -332,6 +346,11 @@ function sanitizeEffects(list) {
     if (x.type === "vergleich") { o.vorher = s(x.vorher, 50); o.nachher = s(x.nachher, 50); }
     if (x.type === "nachricht") { o.nachrichten = (Array.isArray(x.nachrichten) ? x.nachrichten : []).slice(0, 3).map(m => s(m, 70)).filter(Boolean); }
     if (x.type === "emoji") { o.emoji = Array.from(String(x.emoji || "")).slice(0, 2).join(""); }
+    if (x.type === "hinter") { o.woerter = (Array.isArray(x.woerter) ? x.woerter : []).slice(0, 3).map(w => ({ text: s(w && w.text, 12), wort: i(w && w.wort) })).filter(w => w.text); }
+    if (x.type === "spotlight") { o.text = s(x.text, 30); }
+    if (x.type === "greenscreen") { o.titel = s(x.titel, 50); o.text = s(x.text, 60); }
+    if (x.type === "popout") { o.titel = s(x.titel, 40); }
+    if (x.type === "lichtaus") { o.text = s(x.text, 12); }
     if (x.type === "gif") {
       const giphy = u => /^https:\/\/media\d?\.giphy\.com\/[A-Za-z0-9_\/.?=&-]+$/.test(String(u || "")) ? String(u) : "";
       o.suche = s(x.suche, 40); o.gif_id = /^[A-Za-z0-9]{1,40}$/.test(String(x.gif_id || "")) ? String(x.gif_id) : "";
@@ -341,6 +360,64 @@ function sanitizeEffects(list) {
     if (x.off) o.off = true;
     return o;
   }).filter(o => o.von !== undefined || o.wort !== undefined);
+}
+
+
+// ---------------- Änderungen per Satz ----------------
+// Die Kundin schreibt, was anders sein soll. Die KI übersetzt das in erlaubte Änderungen, der Server prüft und speichert sie.
+async function routeNotes(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {};
+  const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  if (!["ready", "done"].includes(j.status)) return json({ error: "busy" }, 409);
+  const note = String(b.text || "").trim().slice(0, 600); if (!note) return json({ error: "server" }, 400);
+  const st = j.style || {}; const words = (j.words || []).map(w => Object.assign({}, w));
+  const state = { untertitel_stil: st.caption_style, look: st.look, groesse: st.size, position: st.position, hook_titel: j.hook_titel, hook_an: st.hook !== false, untertitel_an: st.captions !== false,
+    logo_an: !!st.logo_on, zoom: st.zoom_scale == null ? 1 : st.zoom_scale, toene_an: !st.sounds_off,
+    effekte: (st.effects || []).map((e, i) => ({ i, typ: e.type, aus: !!e.off, text: e.text || e.titel || e.label || e.stichwort || e.wert || (e.punkte || e.woerter || []).map(x => x.text).join(" / ") || "" })) };
+  const transcript = words.slice(0, 1500).map((w, i) => i + ":" + w.w + (w.cut ? "[weg]" : "") + (w.emph ? "[betont]" : "")).join(" ");
+  const instructions = "Du bist die Schnitt-Assistentin im AI is Female Creator Studio. Eine Kundin beschreibt, was an ihrem Reel anders sein soll. Übersetze ihren Wunsch in Änderungen. Antworte NUR mit JSON in diesem Format: " +
+    "{\"antwort\":\"ein freundlicher Satz, was du änderst\",\"einstellungen\":{\"untertitel_stil\":\"klar|box|elegant|leise|gross|plakat|handschrift|kino|pop|karaoke|neon|editorial|mono|pastell|kontur|magazin|marke\",\"look\":\"business|warm|editorial|energie|kino|magazin|keiner\",\"groesse\":\"klein|mittel|gross\",\"position\":\"auto|unten|mitte|oben\",\"hook_an\":true,\"untertitel_an\":true,\"logo_an\":true,\"zoom\":1,\"toene_an\":true},\"hook_titel\":\"\",\"effekte\":[{\"i\":0,\"aus\":true,\"entfernen\":false,\"text\":\"\"}],\"woerter\":[{\"von\":0,\"bis\":0,\"aktion\":\"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom\"}]}. " +
+    "Lass alles weg, was sich nicht ändern soll. zoom ist eine Zahl von 0 (aus) bis 2 (stark). Wortnummern stehen im Text vor jedem Wort. Wenn ein Wunsch nicht umsetzbar ist, sag es in antwort ehrlich und ändere dazu nichts. Erfinde keine Inhalte." + langBlock(s.acc);
+  const input = "Aktuelle Einstellungen: " + JSON.stringify(state) + "\n\nText des Reels mit Wortnummern: " + transcript + "\n\nWunsch der Kundin: " + note;
+  const r = await charged(env, s, "reel_note", { instructions, input }, { credits: 1, maxTokens: 1500, tier: "standard" });
+  if (r.err) return r.err;
+  let d = {}; try { d = JSON.parse(String(r.text).replace(/^```json|```$/g, "").trim()); } catch (e) { return json({ error: "ai" }, 502); }
+  const e = d.einstellungen || {}, ns = Object.assign({}, st), changed = [];
+  const setIf = (k, v, ok) => { if (v !== undefined && ok) { ns[k] = v; changed.push(k); } };
+  setIf("caption_style", e.untertitel_stil, CAPTION_STYLES.includes(e.untertitel_stil));
+  if (e.look !== undefined) { if (e.look === "keiner") { ns.look = null; changed.push("look"); } else setIf("look", e.look, LOOKS.includes(e.look)); }
+  setIf("size", e.groesse, ["klein", "mittel", "gross"].includes(e.groesse));
+  setIf("position", e.position, ["auto", "unten", "mitte", "oben"].includes(e.position));
+  if (typeof e.hook_an === "boolean") { ns.hook = e.hook_an; changed.push("hook"); }
+  if (typeof e.untertitel_an === "boolean") { ns.captions = e.untertitel_an; changed.push("captions"); }
+  if (typeof e.logo_an === "boolean") { ns.logo_on = e.logo_an && !!ns.logo; changed.push("logo"); }
+  if (typeof e.zoom === "number") { ns.zoom_scale = Math.max(0, Math.min(2, e.zoom)); changed.push("zoom"); }
+  if (typeof e.toene_an === "boolean") { ns.sounds_off = !e.toene_an; changed.push("toene"); }
+  const fx = (ns.effects || []).map(x => Object.assign({}, x)); const drop = new Set();
+  for (const c of Array.isArray(d.effekte) ? d.effekte.slice(0, 6) : []) {
+    const x = fx[Number(c && c.i)]; if (!x) continue;
+    if (c.entfernen) { drop.add(Number(c.i)); continue; }
+    if (typeof c.aus === "boolean") x.off = c.aus;
+    if (typeof c.text === "string" && c.text.trim()) { const k = ["zitat", "karte", "spotlight", "lichtaus"].includes(x.type) ? "text" : ["kapitel", "greenscreen", "diagramm", "popout"].includes(x.type) ? "titel" : x.type === "kommentar" ? "stichwort" : null; if (k) x[k] = c.text.trim().slice(0, 80); }
+    changed.push("effekt");
+  }
+  ns.effects = fx.filter((x, i) => !drop.has(i));
+  let hook = j.hook_titel;
+  if (typeof d.hook_titel === "string" && d.hook_titel.trim()) { hook = d.hook_titel.trim().slice(0, 120); changed.push("hook_titel"); }
+  for (const w of Array.isArray(d.woerter) ? d.woerter.slice(0, 20) : []) {
+    const a = Math.max(0, Number(w && w.von) || 0), z = Math.min(words.length - 1, Number(w && w.bis != null ? w.bis : w.von) || a);
+    if (!(z >= a) || z - a > 300) continue;
+    for (let k = a; k <= z; k++) { const x = words[k]; if (!x) continue;
+      if (w.aktion === "schneiden") x.cut = true; else if (w.aktion === "behalten") delete x.cut;
+      else if (w.aktion === "betonen") x.emph = true; else if (w.aktion === "nicht_betonen") delete x.emph;
+      else if (w.aktion === "zoom" && k === a) x.zoom = true; else if (w.aktion === "kein_zoom") delete x.zoom; }
+    changed.push("woerter");
+  }
+  if (!words.some(w => !w.cut)) return json({ error: "nothing_left" }, 400);
+  await patchJob(env, j.id, { style: sanitizeStyle(ns), words: sanitizeWords(words), hook_titel: hook });
+  const fresh = await getJob(env, s, j.id);
+  return json({ antwort: String(d.antwort || "").slice(0, 400), changed: [...new Set(changed)], job: await publicJob(env, url.origin, fresh, true), credits: r.credits });
 }
 
 // ---------------- GIFs über Giphy (Powered by GIPHY) ----------------
@@ -375,6 +452,7 @@ function sanitizeStyle(st) {
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
     brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on,
+    zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 
@@ -415,11 +493,27 @@ async function routeRender(request, env, url) {
     const st = creditStatus(s.acc);
     credits = { monthly: row.monthly_left, monthly_total: st.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left };
   }
-  await patchJob(env, j.id, { status: "rendering", renders: j.renders + 1, error: null });
+  // Freistellungs-Effekte kosten pro Schnitt extra (Rechenzeit auf einer Grafikkarte)
+  const nCut = ((j.style && j.style.effects) || []).filter(e => CUTOUT_TYPES.includes(e.type) && !e.off).length;
+  let cutCredits = 0;
+  if (nCut) {
+    if (!env.REPLICATE_API_TOKEN) return json({ error: "cutout_off" }, 503);
+    const cc = await db(env, "action_costs?action=eq.reel_cutout&select=credits"); const per = cc && cc[0] ? Number(cc[0].credits) : 8;
+    const sp = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: nCut * per, p_action: "reel_cutout", p_note: nCut + " Freistellungs-Effekte" } });
+    const r0 = Array.isArray(sp) ? sp[0] : sp;
+    if (!r0 || r0.ok === false) {
+      if (credits) { const c2 = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: c2 && c2[0] ? Number(c2[0].credits) : 5, p_action: "reel_rerender" } }); }
+      return json({ error: "credits", need: nCut * per, have: creditStatus(s.acc).total }, 402);
+    }
+    cutCredits = nCut * per;
+    credits = { monthly: r0.monthly_left, bonus: r0.bonus_left, total: r0.monthly_left + r0.bonus_left, monthly_total: creditStatus(s.acc).monthly_total };
+  }
+  await patchJob(env, j.id, { status: "rendering", renders: j.renders + 1, error: null, cutout_credits: cutCredits });
   try {
-    await startContainer(env, url.origin, j, "render", { words: j.words, hook_titel: j.hook_titel, style: j.style });
+    await startContainer(env, url.origin, j, "render", { words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined });
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
+    if (cutCredits) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cutCredits, p_action: "reel_cutout" } });
     if (credits) { const cost = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cost && cost[0] ? Number(cost[0].credits) : 5, p_action: "reel_rerender" } }); }
     await patchJob(env, j.id, { status: j.status === "done" ? "done" : "ready", renders: j.renders });
     return json({ error: "render_unavailable" }, 503);
@@ -492,7 +586,7 @@ async function routeInternal(request, env, url) {
     const b = await request.json();
     const rows = await db(env, "reel_jobs?id=eq." + id + "&select=*"); const j = rows && rows[0]; if (!j) return new Response("", { status: 404 });
     if (b.phase === "transcribe") {
-      if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Die Aufnahme ist länger als 3 Stunden." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
+      if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Die Aufnahme ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
       const mins = Math.max(1, Math.ceil((Number(b.duration) || 0) / 60));
       await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, transcript: String(b.text || "").slice(0, 400000) });
       const cost = await db(env, "action_costs?action=eq.transcribe_min&select=credits");
@@ -503,6 +597,7 @@ async function routeInternal(request, env, url) {
       return new Response("ok");
     }
     if (b.status === "error") {
+      if (b.phase === "render" && Number(j.cutout_credits) > 0) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: Number(j.cutout_credits), p_action: "reel_cutout" } });
       await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
       if (b.phase === "analyze") {
         const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
@@ -520,7 +615,17 @@ async function routeInternal(request, env, url) {
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_edit", model_id: "whisper-1+plan", input_tokens: u.input_tokens || 0, cached_tokens: 0, output_tokens: u.output_tokens || 0, cost_eur: Math.round(usd * rate * 1e6) / 1e6, credits: 0 } });
     } else {
       let outBytes = 0; try { const hd = await env.REELS_BUCKET.head(keyOf(id, "final.mp4")); outBytes = hd ? hd.size : 0; } catch (e) {}
-      await patchJob(env, id, { status: "done", length: Number(b.length) || 0, error: null, output_bytes: outBytes });
+      const report = (Array.isArray(b.report) ? b.report : []).slice(0, 10).map(x => String(x).slice(0, 200));
+      await patchJob(env, id, { status: "done", length: Number(b.length) || 0, error: null, output_bytes: outBytes, cutout_credits: 0, report });
+      const failed = Number(b.cutout_failed) || 0, charged = Number(j.cutout_credits) || 0;
+      if (failed && charged) {
+        const nAll = ((j.style && j.style.effects) || []).filter(e => CUTOUT_TYPES.includes(e.type) && !e.off).length || failed;
+        await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: Math.min(charged, Math.round(charged / nAll * failed)), p_action: "reel_cutout" } });
+      }
+      if (charged) { // Kosten der Freistellung für den Admin protokollieren (Schätzwert pro erfolgreichem Effekt)
+        const nOk = Math.max(0, (((j.style && j.style.effects) || []).filter(e => CUTOUT_TYPES.includes(e.type) && !e.off).length) - failed);
+        if (nOk) { const rate2 = await usdEur(env); await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_cutout", model_id: "replicate-rvm", input_tokens: 0, cached_tokens: 0, output_tokens: 0, cost_eur: Math.round(nOk * 0.06 * rate2 * 10000) / 10000 } }); }
+      }
       const rate = await usdEur(env);
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_render", model_id: "container", input_tokens: 0, cached_tokens: 0, output_tokens: 0, cost_eur: Math.round((Number(b.seconds) || 0) * 0.00006 * rate * 1e6) / 1e6, credits: 0 } });
     }

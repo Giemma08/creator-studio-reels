@@ -8,6 +8,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const R = require("./render.cjs");
 const E = require("./effects.cjs");
+const C = require("./cutout.cjs");
 const ASSET_DIR = path.join(__dirname, "assets");
 const HF_BIN = path.join(__dirname, "node_modules", ".bin", "hyperframes");
 
@@ -134,6 +135,22 @@ async function aiPlan(job, words) {
 }
 
 // ---------- Rendern ----------
+// Kontrolle: Rutscht das Gesicht irgendwann in den Untertitel-Bereich? Dann dort die Untertitel über den Kopf setzen.
+function faceCheck(layout, segs, map, style) {
+  const moves = [];
+  if (!layout || !layout.found || !Array.isArray(layout.track) || (style.position && style.position !== "auto")) return moves;
+  const cap = layout.zones && layout.zones.captions;
+  if (!cap || cap.where !== "unter dem Kinn") return moves;
+  const kept = t => segs.some(sg => t >= sg.s && t <= sg.e);
+  const raw = layout.track.filter(p => kept(p.t) && p.chin > cap.y - 15)
+    .map(p => [Math.max(0, map(p.t) - 0.45), map(p.t) + 0.45, Math.max(230, p.top - 240)]);
+  for (const w of raw.sort((a, b) => a[0] - b[0])) {
+    const last = moves[moves.length - 1];
+    if (last && w[0] <= last[1] + 0.1) { last[1] = Math.max(last[1], w[1]); last[2] = Math.min(last[2], w[2]); } else moves.push(w.slice());
+  }
+  return moves;
+}
+
 async function render(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
   const input = await getInput(job, dir);
@@ -151,10 +168,15 @@ async function render(job) {
     layout = JSON.parse(await run("python3", [path.join(__dirname, "layout.py"), proxy]));
   } catch (e) { console.log("Vermessung übersprungen", e.message); }
   // 2. Effekte als durchsichtige Ebenen rendern (HyperFrames)
-  const effects = [], hide = [];
+  const effects = [], hide = [], report = [];
+  if (!layout || !layout.found) report.push("Kein Gesicht erkannt: Die Untertitel stehen unten in der Mitte.");
   const planned = E.planEffects((job.style && job.style.effects) || [], words, map, layout);
+  const wanted = ((job.style && job.style.effects) || []).filter(x => !x.off && (x.type !== "gif" || x.mp4)).length;
+  if (wanted > planned.length) report.push((wanted - planned.length) + (wanted - planned.length === 1 ? " Effekt passte" : " Effekte passten") + " zeitlich nicht ins Reel und " + (wanted - planned.length === 1 ? "wurde" : "wurden") + " weggelassen.");
+  const cutouts = [];
   for (let i = 0; i < planned.length; i++) {
     const it = planned[i], fxDir = path.join(dir, "fx" + i);
+    if (E.CUTOUT.includes(it.fx.type)) { cutouts.push({ it, fxDir }); continue; } // später, nach dem Grundschnitt
     if (it.fx.type === "gif") { // GIF laden und direkt mit ffmpeg einsetzen
       try {
         if (!/^https:\/\/media\d?\.giphy\.com\//.test(it.fx.mp4 || "")) throw new Error("ungültige GIF-Adresse");
@@ -162,7 +184,7 @@ async function render(job) {
         const gf = path.join(dir, "gif" + i + ".mp4"); fs.writeFileSync(gf, Buffer.from(await r.arrayBuffer()));
         effects.push({ file: gf, t0: it.t0, d: it.d, gif: true, top: it.place.top, width: 620 });
         if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
-      } catch (e) { console.log("GIF übersprungen", e.message); }
+      } catch (e) { console.log("GIF übersprungen", e.message); report.push("Ein GIF konnte nicht geladen werden und wurde weggelassen."); }
       continue;
     }
     try {
@@ -170,9 +192,14 @@ async function render(job) {
       await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
       effects.push({ file: path.join(fxDir, "out.webm"), t0: it.t0, d: it.d });
       if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
-    } catch (e) { console.log("Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); }
+    } catch (e) { console.log("Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); report.push("Ein Effekt (" + (E.EFFECTS[it.fx.type] || {}).label + ") konnte nicht erstellt werden und wurde weggelassen."); }
   }
   style.hide_captions = hide;
+  const moves = [];
+  for (const c of cutouts) if (c.it.fx.type === "greenscreen") moves.push([c.it.t0, c.it.t1, C.greenscreenCaptionY(layout && layout.head)]);
+  const faceMoves = faceCheck(layout, segs, map, style);
+  if (faceMoves.length) report.push("Untertitel an " + faceMoves.length + (faceMoves.length === 1 ? " Stelle" : " Stellen") + " kurz über deinen Kopf gesetzt, weil dein Gesicht dort tiefer im Bild war.");
+  style.caption_moves = moves.concat(faceMoves);
   // Logo der Marke laden (nur Bilder, höchstens 3 MB)
   let logoFile = null;
   if (style.logo_on && /^https:\/\//.test(style.logo || "")) {
@@ -188,22 +215,61 @@ async function render(job) {
   const kept = words.filter(w => !w.cut);
   let zoomWords = kept.filter(w => w.zoom);
   if (look && look.autoZoom) zoomWords = zoomWords.concat(kept.filter(w => w.emph && !w.zoom)).sort((a, b) => a.s - b.s).filter((w, i, arr) => i === 0 || map(w.s) - map(arr[i - 1].s) > 2.2).slice(0, 6);
-  const zooms = zoomWords.map(w => map(w.s));
-  const sounds = (look && look.sounds === false ? [] : kept).filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
+  const zoomScale = style.zoom_scale == null ? 1 : Number(style.zoom_scale);
+  const zooms = zoomScale > 0 ? zoomWords.map(w => map(w.s)) : [];
+  const sounds = ((look && look.sounds === false) || style.sounds_off ? [] : kept).filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
   const images = [];
   for (const w of kept.filter(x => x.image && x.image.key)) {
     const f = path.join(dir, "img-" + images.length);
     await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(w.image.key), hdr(job), f);
     images.push({ file: f, t: map(w.s), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: w.image.pos || "oben", size: w.image.size || "mittel" });
   }
+  // Freistellungs-Effekte: Grundschnitt ohne Untertitel, dann pro Effekt freistellen und Ebenen zusammensetzen
+  const underlays = []; let cutoutFailed = 0;
+  if (cutouts.length) {
+    const focus0 = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
+    const base = path.join(dir, "base.mp4");
+    let baseOk = false;
+    if (job.replicate_key) {
+      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, grade: look ? look.grade : "", zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
+      catch (e) { console.log("Grundschnitt fehlgeschlagen", e.message.slice(0, 300)); }
+    }
+    for (let i = 0; i < cutouts.length; i++) {
+      const { it, fxDir } = cutouts[i];
+      try {
+        if (!baseOk) throw new Error(job.replicate_key ? "kein Grundschnitt" : "kein Replicate-Schlüssel");
+        const seg = path.join(dir, "cseg" + i + ".mp4"), small = path.join(dir, "csmall" + i + ".mp4"), mask = path.join(dir, "cmask" + i + ".mp4"), comp = path.join(dir, "ccomp" + i + ".mp4");
+        await run("ffmpeg", ["-y", "-loglevel", "error", "-i", base, "-ss", it.t0.toFixed(3), "-t", it.d.toFixed(3), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-r", "30", seg]);
+        await run("ffmpeg", ["-y", "-loglevel", "error", "-i", seg, "-vf", "scale=720:1280", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", small]);
+        await C.matte(job.replicate_key, small, mask);
+        let fxFile = null;
+        const needsLayer = !["greenscreen", "popout"].includes(it.fx.type) || it.fx.titel;
+        if (needsLayer) {
+          E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "", head: layout && layout.head }, ASSET_DIR);
+          await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
+          fxFile = path.join(fxDir, "out.webm");
+        }
+        await run("ffmpeg", C.composeArgs({ type: it.fx.type, seg, mask, fx: fxFile, d: it.d, accent: style.accent, out: comp, head: layout && layout.head }));
+        underlays.push({ file: comp, t0: it.t0, d: it.d });
+      } catch (e) { cutoutFailed++; console.log("Freistellungs-Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); report.push("Der Profi-Effekt „" + (E.EFFECTS[it.fx.type] || {}).label + "“ hat nicht geklappt. Die Credits dafür bekommst du zurück."); }
+    }
+  }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, focus, logo: logoFile, grade: look ? look.grade : "", zoomStrength: look ? look.zoom : 1, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
+  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, grade: look ? look.grade : "", zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
   const thumb = path.join(dir, "final.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", "0.4", "-i", out, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.mp4", hdr(job), out, "video/mp4");
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.jpg", hdr(job), thumb, "image/jpeg");
-  return { status: "done", length: map.total, effects_used: effects.length, layout: layout ? { framing: layout.framing, found: layout.found } : null };
+  try { // Kontrollbild: Anfang, Effekt-Momente, Ende
+    const T = map.total, ts = [Math.min(1.2, T * 0.1)];
+    planned.slice(0, 3).forEach(it => ts.push(it.t0 + it.d * 0.55));
+    [0.35, 0.6, 0.85].forEach(f => { if (ts.length < 6) ts.push(T * f); });
+    const sheet = path.join(dir, "check.jpg");
+    await run("python3", [path.join(__dirname, "sheet.py"), out, sheet, ts.sort((a, b) => a - b).slice(0, 6).map(x => Math.max(0, Math.min(T - 0.1, x)).toFixed(2)).join(",")]);
+    await upload(job.base + "/internal/reels/output/" + job.id + "/check.jpg", hdr(job), sheet, "image/jpeg");
+  } catch (e) { console.log("Kontrollbild übersprungen", e.message); }
+  return { status: "done", length: map.total, effects_used: effects.length + underlays.length, cutout_failed: cutoutFailed, report: report.slice(0, 10), layout: layout ? { framing: layout.framing, found: layout.found } : null };
 }
 
 // ---------- Lange Aufnahmen in Text umwandeln (Repurposing) ----------

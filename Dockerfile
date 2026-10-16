@@ -18,7 +18,7 @@ RUN set -e; for f in poppins/Poppins-Medium.ttf poppins/Poppins-SemiBold.ttf pop
     for f in "playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" "inter/Inter%5Bopsz,wght%5D.ttf" "outfit/Outfit%5Bwght%5D.ttf" "dmsans/DMSans%5Bopsz,wght%5D.ttf" "lora/Lora%5Bwght%5D.ttf" "montserrat/Montserrat%5Bwght%5D.ttf" "cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf" "spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf" "syne/Syne%5Bwght%5D.ttf"; do \
       n=$(basename "$f" | sed 's/%5B/[/;s/%5D/]/'); curl -fsSL -o "fonts/$n" "https://raw.githubusercontent.com/google/fonts/main/ofl/$f"; done; \
     cp fonts/Poppins-*.ttf fonts/DMSerifDisplay-Regular.ttf fonts/*wght*.ttf assets/fonts/; cp fonts/*.ttf /usr/share/fonts/ && fc-cache -f
-COPY server.cjs render.cjs effects.cjs layout.py ./
+COPY server.cjs render.cjs effects.cjs cutout.cjs layout.py sheet.py ./
 COPY kling.wav ping.wav pop.wav whoosh.wav klick.wav tada.wav ./sounds/
 COPY OFL.txt ./fonts/
 ENV NODE_ENV=production

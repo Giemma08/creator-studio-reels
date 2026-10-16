@@ -18,7 +18,14 @@ const EFFECTS = {
   nachricht:  { label: "Nachrichten-Verlauf", needs: "ein Gespräch oder eine Anfrage", minDur: 2.6, maxDur: 5 },
   emoji:      { label: "Emoji-Sticker", needs: "ein Gefühl oder eine Pointe", minDur: 1, maxDur: 1.8 },
   gif:        { label: "GIF", needs: "eine Reaktion oder Pointe", minDur: 1.6, maxDur: 2.6 },
+  // Effekte mit Freistellung (brauchen einen Replicate-Schlüssel, kosten Credits pro Schnitt)
+  hinter:      { label: "Wörter hinter dir", needs: "ein kurzer Satz mit 1 bis 3 starken Wörtern", minDur: 1.8, maxDur: 4, cutout: true },
+  spotlight:   { label: "Spotlight", needs: "ein Satz, der auf eine Pointe hinausläuft", minDur: 1.6, maxDur: 3.5, cutout: true },
+  greenscreen: { label: "Green Screen", needs: "du sprichst über etwas, das man zeigen kann", minDur: 2.2, maxDur: 5, cutout: true },
+  popout:      { label: "Pop-out", needs: "ein Moment, der herausstechen soll", minDur: 1.8, maxDur: 4, cutout: true },
+  lichtaus:    { label: "Licht aus", needs: "ein Satz, der auf ein starkes Wort hinausläuft", minDur: 1.4, maxDur: 3, cutout: true },
 };
+const CUTOUT = Object.keys(EFFECTS).filter(k => EFFECTS[k].cutout);
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -128,6 +135,37 @@ function compose(fx, d, place, theme) {
     body = "<div class='em' id='em'>" + esc(fx.emoji || "✨") + "</div>";
     script = "tl.fromTo('#em',{opacity:0,scale:.3,rotation:-25},{opacity:1,scale:1,rotation:0,duration:.35,ease:'back.out(3)'},0.02);tl.to('#em',{rotation:8,duration:.18,yoyo:true,repeat:1},0.4);tl.to('#em',{opacity:0,scale:.6,duration:.22}," + (d - 0.25).toFixed(2) + ");";
   }
+  else if (fx.type === "hinter") {
+    // Riesige Wörter hinter der Person, wechseln auf dem gesagten Wort
+    const ws = (fx.woerter || []).slice(0, 3); const head = theme.head || { top: 350, chin: 640 };
+    const cy = Math.max(380, Math.round((head.top + head.chin) / 2) - 40);
+    css = ".hw{position:absolute;left:0;right:0;top:" + (cy - 170) + "px;height:340px;display:grid;place-items:center;opacity:0}" +
+      ".hw span{font-weight:900;font-size:300px;line-height:.9;letter-spacing:-.03em;text-transform:uppercase;color:" + accent + ";text-align:center;white-space:nowrap}";
+    body = ws.map((w, i) => "<div class='hw' id='h" + i + "'><span id='hs" + i + "'>" + esc(w.text) + "</span></div>").join("");
+    script = "document.querySelectorAll('.hw span').forEach(s=>{const k=Math.min(1,1000/s.scrollWidth);s.style.fontSize=Math.round(300*k)+'px';});" +
+      ws.map((w, i) => { const at = Math.max(0.05, Math.min(d - 0.4, Number(w.at) || i * 0.9)); const next = i + 1 < ws.length ? Math.max(at + 0.3, Number(ws[i + 1].at) || (i + 1) * 0.9) : d - 0.25;
+        return "tl.fromTo('#h" + i + "',{opacity:0,scale:1.25},{opacity:1,scale:1,duration:.18,ease:'power3.out'}," + at.toFixed(2) + ");tl.to('#h" + i + "',{opacity:0,duration:.12}," + Math.max(at + 0.2, next - 0.06).toFixed(2) + ");"; }).join("");
+  } else if (fx.type === "lichtaus") {
+    const head = theme.head || { top: 350, chin: 640 };
+    const cy = Math.max(380, Math.round((head.top + head.chin) / 2) - 60);
+    css = ".la{position:absolute;left:0;right:0;top:" + (cy - 170) + "px;height:340px;display:grid;place-items:center;opacity:0}.la span{font-weight:900;font-size:300px;line-height:.9;letter-spacing:-.03em;text-transform:uppercase;color:#fff;text-shadow:0 0 50px " + accent + ";white-space:nowrap}";
+    body = "<div class='la' id='la'><span id='las'>" + esc(fx.text || "") + "</span></div>";
+    script = "(function(){const s=document.getElementById('las');const k=Math.min(1,1000/s.scrollWidth);s.style.fontSize=Math.round(300*k)+'px';})();" +
+      "tl.fromTo('#la',{opacity:0,scale:1.3},{opacity:1,scale:1,duration:.16,ease:'power4.out'}," + Math.max(0.25, Math.min(d - 0.8, Number(fx.at) || d * 0.45)).toFixed(2) + ");tl.to('#la',{opacity:0,duration:.12}," + (d - 0.2).toFixed(2) + ");";
+  } else if (fx.type === "popout") {
+    css = ".po{position:absolute;left:60px;right:60px;top:250px;text-align:center;opacity:0}.po span{display:inline-block;background:#fff;color:" + ink + ";font-weight:900;font-size:52px;padding:14px 26px;border-radius:20px;box-shadow:0 14px 40px rgba(0,0,0,.25)}";
+    body = fx.titel ? "<div class='po' id='po'><span>" + esc(fx.titel) + "</span></div>" : "";
+    script = fx.titel ? "tl.fromTo('#po',{opacity:0,y:-20},{opacity:1,y:0,duration:.3,ease:'back.out(2)'},0.2);tl.to('#po',{opacity:0,duration:.25}," + (d - 0.3).toFixed(2) + ");" : "";
+  } else if (fx.type === "spotlight") {
+    const head = theme.head || { top: 350 };
+    css = ".sp{position:absolute;left:40px;right:40px;top:" + Math.max(240, head.top - 230) + "px;text-align:center;opacity:0}.sp span{font-weight:900;font-size:120px;line-height:1;color:#fff;text-shadow:0 0 40px " + accent + "}";
+    body = "<div class='sp' id='sp'><span>" + esc(fx.text || "") + "</span></div>";
+    script = "tl.fromTo('#sp',{opacity:0,y:20,scale:.9},{opacity:1,y:0,scale:1,duration:.3,ease:'back.out(2)'}," + Math.min(0.6, d / 3).toFixed(2) + ");tl.to('#sp',{opacity:0,duration:.25}," + (d - 0.3).toFixed(2) + ");";
+  } else if (fx.type === "greenscreen") {
+    css = ".gs{position:absolute;left:60px;right:60px;top:250px;padding:26px 30px;border-radius:26px;background:rgba(255,255,255,.94);opacity:0}.gs b{display:block;font-weight:900;font-size:58px;line-height:1.1;color:" + ink + "}.gs small{display:block;margin-top:8px;font-weight:700;font-size:30px;color:" + accent + "}";
+    body = fx.titel ? "<div class='gs' id='gs'><b>" + esc(fx.titel) + "</b>" + (fx.text ? "<small>" + esc(fx.text) + "</small>" : "") + "</div>" : "";
+    script = fx.titel ? "tl.fromTo('#gs',{opacity:0,y:-20},{opacity:1,y:0,duration:.35},0.15);tl.to('#gs',{opacity:0,duration:.25}," + (d - 0.3).toFixed(2) + ");" : "";
+  }
   return "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;background:transparent}" + fontFaces() + brandFace(theme) +
     "#root{position:relative;width:" + W + "px;height:" + H + "px;overflow:hidden;background:transparent;font-family:" + (theme.fontFile ? "'Marke'," : "") + "'Poppins',system-ui,sans-serif}" + css +
     "</style></head><body><div id='root' data-composition-id='root' data-width='" + W + "' data-height='" + H + "' data-start='0' data-duration='" + d.toFixed(2) + "'>" + body +
@@ -170,6 +208,8 @@ function planEffects(effects, words, map, layout) {
     const place = placement(layout, neededHeight(fx));
     const copy = Object.assign({}, fx);
     if (fx.type === "checkliste") copy.punkte = (fx.punkte || []).map(p => ({ text: p.text, at: words[p.wort] && !words[p.wort].cut ? map(words[p.wort].s) - t0 : null }));
+    if (fx.type === "lichtaus" && words[fx.bis] && !words[fx.bis].cut) copy.at = map(words[fx.bis].s) - t0;
+    if (fx.type === "hinter") copy.woerter = (fx.woerter || []).map(w => ({ text: w.text, at: words[w.wort] && !words[w.wort].cut ? map(words[w.wort].s) - t0 : null }));
     out.push({ fx: copy, t0, t1, d: t1 - t0, place });
     lastEnd = t1;
   }
@@ -186,4 +226,4 @@ function writeProject(dir, item, theme, assetsDir) {
   }
 }
 
-module.exports = { EFFECTS, planEffects, compose, writeProject, placement };
+module.exports = { EFFECTS, CUTOUT, planEffects, compose, writeProject, placement };
