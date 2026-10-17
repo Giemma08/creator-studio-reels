@@ -211,6 +211,13 @@ async function render(job) {
   const assFile = path.join(dir, "subs.ass");
   fs.writeFileSync(assFile, R.buildAss(words, map, style, layout));
   const look = R.LOOKS[style.look] || null;
+  // Licht und Haut: zusätzliche Filter zum Look (Licht -2 bis +3, Haut 0 bis 3)
+  const licht = Math.max(-2, Math.min(3, Number(style.licht) || 0)), haut = Math.max(0, Math.min(3, Number(style.haut) || 0));
+  const extra = [];
+  if (licht) extra.push("eq=gamma=" + (1 + 0.09 * licht).toFixed(2) + ":brightness=" + (0.012 * licht).toFixed(3) + ":contrast=" + (1 + 0.015 * Math.abs(licht)).toFixed(3));
+  if (haut) extra.push("smartblur=lr=" + (1.0 + 0.6 * haut).toFixed(1) + ":ls=" + (0.3 + 0.17 * haut).toFixed(2) + ":lt=" + (3 + 3 * haut));
+  const gradeFull = [look ? look.grade : "", extra.join(",")].filter(Boolean).join(",");
+  const gradeBase = look ? look.grade : "";
   if (look && !style.caption_style) style.caption_style = look.caption;
   const kept = words.filter(w => !w.cut);
   let zoomWords = kept.filter(w => w.zoom);
@@ -231,7 +238,7 @@ async function render(job) {
     const base = path.join(dir, "base.mp4");
     let baseOk = false;
     if (job.replicate_key) {
-      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, grade: look ? look.grade : "", zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
+      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, grade: gradeFull, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
       catch (e) { console.log("Grundschnitt fehlgeschlagen", e.message.slice(0, 300)); }
     }
     for (let i = 0; i < cutouts.length; i++) {
@@ -256,7 +263,9 @@ async function render(job) {
   }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, grade: look ? look.grade : "", zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio }));
+  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
+  try { await run("ffmpeg", finalArgs(gradeFull)); }
+  catch (e) { if (!extra.length) throw e; console.log("Licht/Haut-Filter fehlgeschlagen, ohne erneut:", e && e.message); await run("ffmpeg", finalArgs(gradeBase)); }
   const thumb = path.join(dir, "final.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", "0.4", "-i", out, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.mp4", hdr(job), out, "video/mp4");

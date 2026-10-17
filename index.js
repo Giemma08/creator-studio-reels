@@ -485,6 +485,7 @@ function sanitizeStyle(st) {
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
     brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
+    licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(3, Math.round(Number(st.haut) || 0))),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 
