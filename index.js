@@ -54,6 +54,7 @@ export default {
       if (p === "/api/reels/save" && m === "POST") return await routeSave(request, env);
       if (p === "/api/reels/gifs" && m === "GET") return await routeGifs(request, env, url);
       if (p === "/api/reels/notes" && m === "POST") return await routeNotes(request, env, url);
+      if (p === "/api/reels/cmd" && m === "POST") return await routeCmd(request, env);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
       return json({ error: "not_found" }, 404);
@@ -361,6 +362,7 @@ async function routeComplete(request, env, url) {
 const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "Montserrat", "Poppins", "Cormorant Garamond", "Space Grotesk", "Syne"];
 const CAPTION_STYLES = ["marke", "klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
+const CAP_FONTS = ["Poppins", "Montserrat", "Inter", "DM Sans", "Outfit", "Space Grotesk", "Syne", "Anton", "Bebas Neue", "Archivo Black", "Playfair Display", "DM Serif Display", "Lora", "Cormorant Garamond", "Abril Fatface", "Caveat Brush", "Pacifico", "Space Mono"];
 const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif", "hinter", "spotlight", "greenscreen", "popout", "lichtaus"];
 const CUTOUT_TYPES = ["hinter", "spotlight", "greenscreen", "popout", "lichtaus"];
 function sanitizeEffects(list) {
@@ -452,6 +454,55 @@ async function routeNotes(request, env, url) {
   return json({ antwort: String(d.antwort || "").slice(0, 400), changed: [...new Set(changed)], job: await publicJob(env, url.origin, fresh, true), credits: r.credits });
 }
 
+// ---------------- KIRA-Befehle im Reel-Editor (2.13) ----------------
+// KIRA übersetzt einen Wunsch in Handgriffe. Der Editor führt sie sofort aus, die Kundin sieht das Ergebnis in der Vorschau und kann es rückgängig machen.
+const CMD_REEL = `Du steuerst einen Reel-Editor. Die Nutzerin beschreibt, was sich an ihrem Reel ändern soll. Übersetze ihren Wunsch in Handgriffe. Ändere nur, was sie verlangt.
+Das Transkript steht mit Wortnummern vor jedem Wort, z. B. 12:Hallo. Markierungen: [weg] = herausgeschnitten, [betont] = farbig hervorgehoben, [zoom], [ton]. Sätze findest du über ihren Inhalt, nicht über die genaue Formulierung. Bezieht sich der Wunsch auf „das hier“, „das Markierte“ oder „diese Wörter“, nimm die markierten Wörter.
+Farben gibst du als #RRGGBB an. Farbnamen übersetzt du NIE in grelle Standard-Webfarben, sondern in diese gedeckten Designfarben:
+gold #C9A227, champagner #E8D9B5, creme #F7F1E8, beige #E9DCC9, sand #D8C3A5, navy/marineblau/dunkelblau #1F2A44, blau #2F5D8A, hellblau #A9C7E3, petrol #1F5F6B, türkis #2A9D8F, mint #BFE3D0, salbei #A3B18A, grün #3A7D44, smaragd #1F7A5C, rot #B83A3A, bordeaux/weinrot #7A1F33, rosa #F2C4CE, altrosa #D8A7A7, pink #E0457B, beere #8E2C58, lila/violett #6C4C9E, lavendel #C9B8E6, orange #E07A3F, terrakotta #C66B4B, apricot #F4B183, gelb #F2C94C, senf #D1A52B, braun #7A5640, grau #8A8F98, anthrazit #2E3138, schwarz #141414, weiß #FFFFFF.
+Erlaubte Handgriffe:
+{"op":"untertitel","stil":"marke|klar|box|elegant|leise|gross|plakat|handschrift|kino|pop|karaoke|neon|editorial|mono|pastell|kontur|magazin"}
+{"op":"untertitel","schrift":"Poppins|Montserrat|Inter|DM Sans|Outfit|Space Grotesk|Syne|Anton|Bebas Neue|Archivo Black|Playfair Display|DM Serif Display|Lora|Cormorant Garamond|Abril Fatface|Caveat Brush|Pacifico|Space Mono|stil"}
+{"op":"untertitel","farbe":"#F2C94C"}   (Textfarbe der Untertitel, "stil" = wie der Stil)
+{"op":"untertitel","hervorhebung":"#F2C94C"}   (Farbe des gesprochenen und der betonten Wörter, "marke" = Markenfarbe)
+{"op":"untertitel","groesse":1.2}   (Faktor zur aktuellen Größe: größer 1.15 bis 1.4, kleiner 0.75 bis 0.9)
+{"op":"untertitel","position":"auto|oben|mitte|unten"}  oder  {"op":"untertitel","hoehe":40}   (Oberkante in Prozent von oben, 8 bis 85; für „etwas höher“ ändere die aktuelle Höhe um 5 bis 10)
+{"op":"untertitel","unterlegung":"stil|ohne|dunkel|hell|marke|#RRGGBB"}
+{"op":"untertitel","woerter":2}   (Wörter pro Einblendung 1 bis 5, "stil" = wie der Stil)
+{"op":"untertitel","schreibweise":"gross|normal|stil"}
+{"op":"untertitel","an":false}
+{"op":"untertitel","zuruecksetzen":true}   (alle eigenen Anpassungen weg, wieder wie der Stil)
+{"op":"ueberschrift","text":"…","an":true,"position":"auto|oben|mitte|unten","groesse":"klein|normal|gross","unterlegung":"marke|schwarz|weiss|ohne|#RRGGBB","schrift":"Poppins|Montserrat|Playfair Display|Lora|Cormorant Garamond|DM Sans|Outfit|Space Grotesk|Syne|Inter|marke","breit":true}   (nur genannte Felder; „weiter nach oben“ heißt position oben)
+{"op":"woerter","von":12,"bis":18,"aktion":"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom|ton|kein_ton","ton":"kling|ping|pop|whoosh|klick|tada"}   (zoom und ton wirken auf das erste Wort; ton nur mit aktion "ton")
+{"op":"wort_aendern","wort":7,"neu":"richtiges Wort"}   (Tippfehler oder falsch erkannte Wörter im Untertitel korrigieren)
+{"op":"fuellwoerter"}   (Ähs, Ähms und Mms herausschneiden)
+{"op":"look","wert":"business|warm|editorial|energie|kino|magazin|keiner"}
+{"op":"licht","belichtung":1,"haut":2}   (belichtung -2 bis 3, haut 0 bis 3, Werte sind absolut, nur genannte)
+{"op":"zoom_staerke","wert":1}   (0 aus bis 2 stark)
+{"op":"toene","an":false}
+{"op":"logo","an":true}
+{"op":"effekt","i":0,"aus":true,"entfernen":false,"text":""}
+Antworte NUR mit JSON: {"ops":[...],"antwort":"ein kurzer, freundlicher Satz, was du gemacht hast"}. Ist der Wunsch unklar oder nicht machbar (zum Beispiel Musik, Übergänge oder Einblendungen, die es noch nicht gibt), gib "ops":[] und sag es ehrlich in "antwort". Erfinde keine Inhalte.`;
+
+async function routeCmd(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {};
+  const befehl = String(b.befehl || "").trim().slice(0, 600); if (!befehl) return json({ error: "cmd_empty" }, 400);
+  const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  const st = b.stand && typeof b.stand === "object" ? b.stand : {};
+  const words = Array.isArray(st.woerter) ? st.woerter.slice(0, 3000) : [];
+  const transcript = words.map((w, i) => i + ":" + String(w.w || "").slice(0, 40) + (w.cut ? "[weg]" : "") + (w.emph ? "[betont]" : "") + (w.zoom ? "[zoom]" : "") + (w.sound ? "[ton]" : "")).join(" ").slice(0, 30000);
+  const info = Object.assign({}, st); delete info.woerter;
+  const LN = { de: "Deutsch", en: "Englisch", fr: "Französisch", it: "Italienisch", es: "Spanisch", pt: "Portugiesisch", nl: "Niederländisch", sv: "Schwedisch", ca: "Katalanisch" };
+  const uiLang = LN[b.ui_lang] ? b.ui_lang : (LN[s.acc.ui_lang] ? s.acc.ui_lang : "de");
+  const instructions = CMD_REEL + "\n\nSchreib das Feld \"antwort\" auf " + LN[uiLang] + ". Neue Überschriften und korrigierte Wörter schreibst du in der Sprache des Transkripts.";
+  const input = "Aktuelle Einstellungen: " + JSON.stringify(info).slice(0, 4000) + "\n\nTranskript mit Wortnummern: " + transcript + "\n\nWunsch der Nutzerin: " + befehl;
+  const r = await charged(env, s, "kira_befehl", { instructions, input }, { tier: "standard", maxTokens: 2500 });
+  if (r.err) return r.err;
+  let d = {}; try { d = JSON.parse(String(r.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const m = /\{[\s\S]*\}/.exec(String(r.text)); try { d = m ? JSON.parse(m[0]) : {}; } catch (e2) { d = {}; } }
+  return json({ ops: Array.isArray(d.ops) ? d.ops.slice(0, 40) : [], antwort: String(d.antwort || "").slice(0, 400), credits: r.credits });
+}
+
 // ---------------- GIFs über Giphy (Powered by GIPHY) ----------------
 async function giphySearch(env, q, limit) {
   if (!env.GIPHY_API_KEY || !q) return [];
@@ -480,10 +531,14 @@ async function preselectGifs(env, effects) {
 function sanitizeStyle(st) {
   st = st && typeof st === "object" ? st : {};
   const hex = v => /^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v) : undefined;
-  return { accent: hex(st.accent) || "#E6007E", position: ["auto", "unten", "mitte", "oben"].includes(st.position) ? st.position : "auto",
+  const num = (v, a, b) => v == null || v === "" || !isFinite(Number(v)) ? null : Math.max(a, Math.min(b, Number(v)));
+  return { accent: hex(st.accent) || "#E6007E", position: ["auto", "unten", "mitte", "oben", "frei"].includes(st.position) ? st.position : "auto",
+    cap_font: CAP_FONTS.includes(st.cap_font) ? st.cap_font : null, cap_color: hex(st.cap_color) || null, cap_hl: hex(st.cap_hl) || null,
+    cap_scale: num(st.cap_scale, 0.6, 1.6), cap_y: num(st.cap_y, 8, 85), cap_box: ["none", "dark", "light", "accent", "custom"].includes(st.cap_box) ? st.cap_box : null,
+    cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none"].includes(st.hook_box) ? st.hook_box : "accent",
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
     licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(3, Math.round(Number(st.haut) || 0))),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };

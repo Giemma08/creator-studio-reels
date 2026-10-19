@@ -96,35 +96,78 @@ const LOOKS = {
 
 function caseOf(st, s) { return st.upper ? s.toLocaleUpperCase("de-DE") : st.lower ? s.toLocaleLowerCase("de-DE") : s; }
 
-// Untertitel bauen. layout (optional) kommt aus layout.py: Kopf, Kinn und freie Zonen
-function buildAss(words, map, style, layout) {
+// ---------- Untertitel einzeln anpassen (2.13): Schrift, Farbe, Hervorhebung, Größe, Position, Unterlegung ----------
+// Schriften, die für Untertitel wählbar sind: Name im Studio -> Name für libass und ob fett gesetzt wird
+const CAP_FONTS = {
+  "Poppins": { ass: "Poppins ExtraBold", bold: 0 }, "Montserrat": { ass: "Montserrat", bold: 1 }, "Inter": { ass: "Inter", bold: 1 }, "DM Sans": { ass: "DM Sans", bold: 1 },
+  "Outfit": { ass: "Outfit", bold: 1 }, "Space Grotesk": { ass: "Space Grotesk", bold: 1 }, "Syne": { ass: "Syne", bold: 1 }, "Anton": { ass: "Anton", bold: 0 },
+  "Bebas Neue": { ass: "Bebas Neue", bold: 0 }, "Archivo Black": { ass: "Archivo Black", bold: 0 }, "Playfair Display": { ass: "Playfair Display", bold: 1 },
+  "DM Serif Display": { ass: "DM Serif Display", bold: 0 }, "Lora": { ass: "Lora", bold: 1 }, "Cormorant Garamond": { ass: "Cormorant Garamond", bold: 1 },
+  "Abril Fatface": { ass: "Abril Fatface", bold: 0 }, "Caveat Brush": { ass: "Caveat Brush", bold: 0 }, "Pacifico": { ass: "Pacifico", bold: 0 }, "Space Mono": { ass: "Space Mono", bold: 1 },
+};
+const hexOk = v => /^#[0-9a-f]{6}$/i.test(String(v || ""));
+function lumOf(hex) { const m = /^#?([0-9a-f]{6})$/i.exec(hex || ""); if (!m) return 1; const n = parseInt(m[1], 16); return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255; }
+// Wirksamer Untertitel-Stil: gewählter Stil plus eigene Anpassungen. Die Vorschau im Editor rechnet genauso.
+function captionStyle(style) {
+  style = style || {};
   const key = CAPTION_STYLES[style.caption_style] ? style.caption_style : "klar";
-  let st = CAPTION_STYLES[key];
-  if (st.font === "@brand") st = Object.assign({}, st, { font: BRAND_FONTS[style.brand_font] ? (style.brand_font === "Poppins" ? "Poppins ExtraBold" : style.brand_font) : "Poppins ExtraBold" });
-  const accent = assColor(style.accent || "#E6007E");
-  const base = assColor(st.color || "#FFFFFF");
-  const dim = "&H40" + base.slice(4);           // leicht durchsichtig für noch nicht gesprochene Wörter
+  const st = Object.assign({}, CAPTION_STYLES[key]);
+  if (st.font === "@brand") { st.font = BRAND_FONTS[style.brand_font] ? (style.brand_font === "Poppins" ? "Poppins ExtraBold" : style.brand_font) : "Poppins ExtraBold"; }
+  const cf = CAP_FONTS[style.cap_font];
+  if (cf) { st.font = cf.ass; st.bold = !!cf.bold; }
+  if (hexOk(style.cap_color)) st.color = style.cap_color;
+  const n = Math.round(Number(style.cap_n) || 0); if (n >= 1 && n <= 5) st.n = n;
+  if (style.cap_case === "upper") { st.upper = true; st.lower = false; } else if (style.cap_case === "normal") { st.upper = false; st.lower = false; }
+  const box = style.cap_box;
+  if (box === "none") { if (st.plate) st.outline = 5; st.plate = false; delete st.plateColor; }
+  else if (["dark", "light", "accent", "custom"].includes(box)) {
+    const col = box === "dark" ? "#141414" : box === "light" ? "#FFFFFF" : box === "accent" ? (hexOk(style.accent) ? style.accent : "#E6007E") : (hexOk(style.cap_box_bg) ? style.cap_box_bg : "#1F2A44");
+    if (!st.plate) st.outline = 18;
+    st.plate = true; st.plateColor = col; st.plateAlpha = box === "dark" ? "30" : "00"; st.hollow = false; st.glow = false; st.shadow = 0;
+    if (!hexOk(style.cap_color)) st.color = lumOf(col) > 0.6 ? "#1A1A1A" : "#FFFFFF";
+  }
+  // Farbe für das gesprochene und die betonten Wörter
+  let hl = hexOk(style.cap_hl) ? style.cap_hl : hexOk(style.accent) ? style.accent : "#E6007E";
+  if (!hexOk(style.cap_hl) && st.plate && st.plateColor && st.plateColor.toUpperCase() === hl.toUpperCase()) hl = "#F2C94C";
+  const scale = Math.max(0.6, Math.min(1.6, Number(style.cap_scale) || 1));
   const sizeF = style.size === "gross" ? 1.15 : style.size === "klein" ? 0.85 : 1;
-  const size = Math.round(st.size * sizeF);
-  const zones = (layout && layout.zones) || null;
-  // Position: manuell gewählt oder automatisch aus der Vermessung (oberer Rand des Untertitel-Bands)
+  st.size = Math.round(st.size * sizeF * scale);
+  return { key, st, hl };
+}
+// Oberkante der Untertitel (Pixel bei 1920 Höhe)
+function captionTop(style, st, layout) {
+  const size = st.size, zones = (layout && layout.zones) || null;
   let top;
+  if (style.position === "frei") { const y = Number(style.cap_y); top = Math.round((isFinite(y) ? y : 60) / 100 * H); return Math.max(150, Math.min(1640 - size * 2, top)); }
   if (style.position === "oben") top = 330;
   else if (style.position === "mitte") top = 860;
   else if (style.position === "unten") top = 1250;
   else if (zones && zones.captions) top = st.center ? Math.round((zones.below ? (zones.below.y0 + zones.below.y1) / 2 : 1150) - size / 2) : zones.captions.y;
   else top = 1180;
-  top = Math.max(230, Math.min(1470 - size * 2, top));
-  const border = st.plate ? 3 : 1;
-  const back = st.plate ? "&H50141414&" : "&H64000000&";
+  return Math.max(230, Math.min(1470 - size * 2, top));
+}
+
+// Untertitel bauen. layout (optional) kommt aus layout.py: Kopf, Kinn und freie Zonen
+function buildAss(words, map, style, layout) {
+  const eff = captionStyle(style), key = eff.key, st = eff.st;
+  const accent = assColor(eff.hl);
+  const hookAccent = assColor(style.accent || "#E6007E");
+  const base = assColor(st.color || "#FFFFFF");
+  const dim = "&H40" + base.slice(4);           // leicht durchsichtig für noch nicht gesprochene Wörter
+  const size = st.size;
+  const top = captionTop(style, st, layout);
+  // Kasten hinter den Untertiteln: BorderStyle 4 zeichnet einen durchgehenden Kasten pro Einblendung (BackColour).
+  // Früher BorderStyle 3: dort entstanden an Farbwechseln dunklere Streifen, weil sich halbtransparente Kästen überlappten.
+  const border = st.plate ? 4 : 1;
   const plateCol = st.plateColor ? "&H" + (st.plateAlpha || "30") + assColor(st.plateColor).slice(4) : "&H50141414&";
-  const outlineCol = st.plate ? plateCol : st.glow ? assColor(style.accent || "#E6007E") : "&H00141414&";
+  const back = st.plate ? plateCol : "&H64000000&";
+  const outlineCol = st.plate ? "&HFF000000&" : st.glow ? accent : "&H00141414&";
   const lines = [
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
-    "Style: Hook," + (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold") + ",66," + (style.hook_box === "white" ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H00141414&" : accent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H64000000&" : accent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : "3,20,0") + ",8,110,110," + hookTop(layout) + ",1",
+    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + ({ klein: 52, gross: 82 }[style.hook_size] || 66) + "," + (style.hook_box === "white" ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + ({ oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
   ];
   const kept = words.filter(w => !w.cut);
@@ -188,6 +231,7 @@ function buildAss(words, map, style, layout) {
 }
 
 // Hook-Titel oben: über dem Kopf, wenn dort Platz ist, sonst oben in der Sicherheitszone
+function hexAss(hex) { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || "")); return m ? "&H00" + (m[3] + m[2] + m[1]).toUpperCase() + "&" : "&H00141414&"; }
 function hookTop(layout) {
   const z = layout && layout.zones;
   if (z && z.above && z.above.y1 - z.above.y0 >= 140) return Math.max(250, z.above.y1 - 140);
@@ -282,4 +326,4 @@ function buildFfmpegArgs(o) {
   return args;
 }
 
-module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, SOUNDS, CAPTION_STYLES, LOOKS, BRAND_FONTS, W, H, FPS };
+module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, captionStyle, captionTop, SOUNDS, CAPTION_STYLES, CAP_FONTS, LOOKS, BRAND_FONTS, W, H, FPS };
