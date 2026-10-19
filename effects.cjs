@@ -191,7 +191,7 @@ function neededHeight(fx) {
 function planEffects(effects, words, map, layout) {
   const out = [];
   let lastEnd = -1;
-  for (const fx of (effects || []).slice(0, 3)) {
+  for (const fx of (effects || []).slice(0, 4)) { // bis zu 4 Effekte, wie im Editor (2.13.2)
     if (!EFFECTS[fx.type] || fx.off || (fx.type === "gif" && !fx.mp4)) continue;
     const startW = words[fx.von] || words[fx.wort];
     if (!startW || startW.cut) continue;

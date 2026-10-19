@@ -238,6 +238,23 @@ function hookTop(layout) {
   return 250;
 }
 
+// Zoom-Bereiche (2.13.1): aufeinanderfolgende Zoom-Wörter bilden einen Bereich. Langsam hinein, halten, langsam wieder heraus.
+const ZOOM_IN = 0.6, ZOOM_OUT = 1.1, ZOOM_MIN_HOLD = 1.2;
+function zoomRanges(kept, isZoom, map) {
+  const out = [];
+  for (let i = 0; i < kept.length; i++) {
+    if (!isZoom(kept[i])) continue;
+    let j = i; while (j + 1 < kept.length && isZoom(kept[j + 1])) j++;
+    const a = map(kept[i].s), b = Math.max(map(kept[j].e), a + ZOOM_MIN_HOLD);
+    const last = out[out.length - 1];
+    if (last && a < last.b + ZOOM_OUT) last.b = Math.max(last.b, b); else out.push({ a, b });
+    i = j;
+  }
+  return out;
+}
+// Weiche Kurve 0..1 (smoothstep) als ffmpeg-Ausdruck
+function easeExpr(x) { const c = "clip(" + x + ",0,1)"; return "(" + c + "*" + c + "*(3-2*" + c + "))"; }
+
 // ffmpeg-Argumente für den kompletten Render-Durchlauf
 function buildFfmpegArgs(o) {
   // o: { input, segs, map, zooms:[t], images:[{file,t,dur,pos,size}], sounds:[{file,t,vol}], assFile, fontsDir, output, hasAudio }
@@ -254,8 +271,10 @@ function buildFfmpegArgs(o) {
   f.push("[0:v]fps=" + FPS + ",scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + ",setsar=1,select='" + sel + "',setpts=N/" + FPS + "/TB" + (o.grade ? "," + o.grade : "") + "[v0]");
   let v = "v0";
   if (o.zooms.length) {
-    const zs = (0.12 * (o.zoomStrength || 1)).toFixed(3);
-    const terms = o.zooms.map(z => zs + "*min(1,(it-" + z.toFixed(3) + ")/0.15)*between(it," + z.toFixed(3) + "," + (z + 1.4).toFixed(3) + ")").join("+");
+    const zs = (0.10 * (o.zoomStrength || 1)).toFixed(3);
+    const rs = o.zooms.map(z => typeof z === "number" ? { a: z, b: z + ZOOM_MIN_HOLD } : z);
+    const terms = rs.map(r => { const din = Math.min(ZOOM_IN, Math.max(0.3, (r.b - r.a) / 2)).toFixed(3);
+      return zs + "*(" + easeExpr("(it-" + r.a.toFixed(3) + ")/" + din) + "-" + easeExpr("(it-" + r.b.toFixed(3) + ")/" + ZOOM_OUT.toFixed(3)) + ")"; }).join("+");
     const fx = o.focus ? Math.max(0.2, Math.min(0.8, o.focus.x)) : 0.5, fy = o.focus ? Math.max(0.15, Math.min(0.7, o.focus.y)) : 0.5;
     f.push("[" + v + "]zoompan=z='1+" + terms + "':d=1:x='max(0,min(iw-iw/zoom," + fx.toFixed(3) + "*iw-iw/zoom/2))':y='max(0,min(ih-ih/zoom," + fy.toFixed(3) + "*ih-ih/zoom/2))':s=" + W + "x" + H + ":fps=" + FPS + "[vz]");
     v = "vz";
@@ -326,4 +345,4 @@ function buildFfmpegArgs(o) {
   return args;
 }
 
-module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, captionStyle, captionTop, SOUNDS, CAPTION_STYLES, CAP_FONTS, LOOKS, BRAND_FONTS, W, H, FPS };
+module.exports = { keptSegments, remapper, buildAss, buildFfmpegArgs, captionStyle, captionTop, zoomRanges, SOUNDS, CAPTION_STYLES, CAP_FONTS, LOOKS, BRAND_FONTS, W, H, FPS };

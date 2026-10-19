@@ -473,7 +473,7 @@ Erlaubte Handgriffe:
 {"op":"untertitel","an":false}
 {"op":"untertitel","zuruecksetzen":true}   (alle eigenen Anpassungen weg, wieder wie der Stil)
 {"op":"ueberschrift","text":"…","an":true,"position":"auto|oben|mitte|unten","groesse":"klein|normal|gross","unterlegung":"marke|schwarz|weiss|ohne|#RRGGBB","schrift":"Poppins|Montserrat|Playfair Display|Lora|Cormorant Garamond|DM Sans|Outfit|Space Grotesk|Syne|Inter|marke","breit":true}   (nur genannte Felder; „weiter nach oben“ heißt position oben)
-{"op":"woerter","von":12,"bis":18,"aktion":"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom|ton|kein_ton","ton":"kling|ping|pop|whoosh|klick|tada"}   (zoom und ton wirken auf das erste Wort; ton nur mit aktion "ton")
+{"op":"woerter","von":12,"bis":18,"aktion":"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom|ton|kein_ton","ton":"kling|ping|pop|whoosh|klick|tada"}   (zoom wirkt über den ganzen Bereich: langsam hinein, halten, langsam heraus; am besten 2 bis 6 Wörter. ton wirkt auf das erste Wort, nur mit aktion "ton")
 {"op":"wort_aendern","wort":7,"neu":"richtiges Wort"}   (Tippfehler oder falsch erkannte Wörter im Untertitel korrigieren)
 {"op":"fuellwoerter"}   (Ähs, Ähms und Mms herausschneiden)
 {"op":"look","wert":"business|warm|editorial|energie|kino|magazin|keiner"}
@@ -558,6 +558,8 @@ async function routeSave(request, env) {
   const s = await session(request, env); if (s.err) return s.err;
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  // Nur den Namen ändern: geht immer, auch während das Reel erstellt wird (2.13.1)
+  if (b.only_title) { const t = String(b.title || "").trim().slice(0, 120); if (!t) return json({ error: "server" }, 400); await patchJob(env, j.id, { title: t }); return json({ ok: true, title: t }); }
   if (!["ready", "done", "error"].includes(j.status)) return json({ error: "busy" }, 409);
   const words = sanitizeWords(b.words, Number(j.duration) || 0);
   for (const w of words) if (w.image && !w.image.key.startsWith("jobs/" + j.id + "/")) delete w.image;

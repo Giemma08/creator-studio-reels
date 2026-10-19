@@ -223,7 +223,8 @@ async function render(job) {
   let zoomWords = kept.filter(w => w.zoom);
   if (look && look.autoZoom) zoomWords = zoomWords.concat(kept.filter(w => w.emph && !w.zoom)).sort((a, b) => a.s - b.s).filter((w, i, arr) => i === 0 || map(w.s) - map(arr[i - 1].s) > 2.2).slice(0, 6);
   const zoomScale = style.zoom_scale == null ? 1 : Number(style.zoom_scale);
-  const zooms = zoomScale > 0 ? zoomWords.map(w => map(w.s)) : [];
+  const zoomSet = new Set(zoomWords);
+  const zooms = zoomScale > 0 ? R.zoomRanges(kept, w => zoomSet.has(w), map) : [];
   const sounds = ((look && look.sounds === false) || style.sounds_off ? [] : kept).filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
   const images = [];
   for (const w of kept.filter(x => x.image && x.image.key)) {
