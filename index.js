@@ -483,7 +483,7 @@ function sanitizeStyle(st) {
   return { accent: hex(st.accent) || "#E6007E", position: ["auto", "unten", "mitte", "oben"].includes(st.position) ? st.position : "auto",
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on,
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none"].includes(st.hook_box) ? st.hook_box : "accent",
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
     licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(3, Math.round(Number(st.haut) || 0))),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
@@ -506,7 +506,9 @@ async function routeSave(request, env) {
   if (!["ready", "done", "error"].includes(j.status)) return json({ error: "busy" }, 409);
   const words = sanitizeWords(b.words, Number(j.duration) || 0);
   for (const w of words) if (w.image && !w.image.key.startsWith("jobs/" + j.id + "/")) delete w.image;
-  await patchJob(env, j.id, { words, hook_titel: String(b.hook_titel || "").slice(0, 120), style: sanitizeStyle(b.style) });
+  const patch = { words, hook_titel: String(b.hook_titel || "").slice(0, 120), style: sanitizeStyle(b.style) };
+  if (typeof b.title === "string" && b.title.trim()) patch.title = b.title.trim().slice(0, 120);
+  await patchJob(env, j.id, patch);
   return json({ ok: true });
 }
 
