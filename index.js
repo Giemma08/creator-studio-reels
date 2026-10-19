@@ -472,7 +472,7 @@ Erlaubte Handgriffe:
 {"op":"untertitel","schreibweise":"gross|normal|stil"}
 {"op":"untertitel","an":false}
 {"op":"untertitel","zuruecksetzen":true}   (alle eigenen Anpassungen weg, wieder wie der Stil)
-{"op":"ueberschrift","text":"…","an":true,"position":"auto|oben|mitte|unten","groesse":"klein|normal|gross","unterlegung":"marke|schwarz|weiss|ohne|#RRGGBB","schrift":"Poppins|Montserrat|Playfair Display|Lora|Cormorant Garamond|DM Sans|Outfit|Space Grotesk|Syne|Inter|marke","breit":true}   (nur genannte Felder; „weiter nach oben“ heißt position oben)
+{"op":"ueberschrift","text":"…","an":true,"dauer":5,"position":"auto|oben|mitte|unten","groesse":"klein|normal|gross","unterlegung":"marke|schwarz|weiss|ohne|#RRGGBB","schrift":"Poppins|Montserrat|Playfair Display|Lora|Cormorant Garamond|DM Sans|Outfit|Space Grotesk|Syne|Inter|marke","breit":true}   (nur genannte Felder; „weiter nach oben“ heißt position oben; dauer = Sekunden am Anfang, 1 bis 60, 3600 = das ganze Video)
 {"op":"woerter","von":12,"bis":18,"aktion":"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom|ton|kein_ton","ton":"kling|ping|pop|whoosh|klick|tada"}   (zoom wirkt über den ganzen Bereich: langsam hinein, halten, langsam heraus; am besten 2 bis 6 Wörter. ton wirkt auf das erste Wort, nur mit aktion "ton")
 {"op":"wort_aendern","wort":7,"neu":"richtiges Wort"}   (Tippfehler oder falsch erkannte Wörter im Untertitel korrigieren)
 {"op":"fuellwoerter"}   (Ähs, Ähms und Mms herausschneiden)
@@ -504,21 +504,29 @@ async function routeCmd(request, env) {
 }
 
 // ---------------- GIFs über Giphy (Powered by GIPHY) ----------------
-async function giphySearch(env, q, limit) {
-  if (!env.GIPHY_API_KEY || !q) return [];
-  const u = "https://api.giphy.com/v1/gifs/search?api_key=" + encodeURIComponent(env.GIPHY_API_KEY) + "&q=" + encodeURIComponent(q) + "&limit=" + (limit || 12) + "&rating=g&lang=de";
-  const r = await fetch(u); if (!r.ok) return [];
+async function giphyRaw(env, q, limit) {
+  const key = String(env.GIPHY_API_KEY || "").trim();
+  if (!key || !q) return { ok: false, status: 0, list: [] };
+  const u = "https://api.giphy.com/v1/gifs/search?api_key=" + encodeURIComponent(key) + "&q=" + encodeURIComponent(q) + "&limit=" + (limit || 12) + "&rating=g";
+  let r; try { r = await fetch(u); } catch (e) { console.log("Giphy nicht erreichbar", e && e.message); return { ok: false, status: 0, list: [] }; }
+  if (!r.ok) { console.log("Giphy Fehler", r.status, (await r.text().catch(() => "")).slice(0, 300)); return { ok: false, status: r.status, list: [] }; }
   const d = await r.json().catch(() => ({}));
-  return (d.data || []).map(g => {
-    const im = g.images || {}; const v = im.fixed_height || im.original || {}; const pr = im.fixed_width_small || im.fixed_height_small || v;
-    return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), mp4: v.mp4 || (im.original && im.original.mp4) || "", preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
+  const list = (d.data || []).map(g => {
+    const im = g.images || {}; const v = im.fixed_height || im.fixed_width || im.original || {}; const pr = im.fixed_width_small || im.fixed_height_small || im.fixed_width || v;
+    const mp4 = v.mp4 || (im.original && im.original.mp4) || (im.original_mp4 && im.original_mp4.mp4) || (im.fixed_width && im.fixed_width.mp4) || "";
+    return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), mp4: mp4, preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
   }).filter(g => g.mp4);
+  if (!list.length) console.log("Giphy ohne Treffer", q, "Rohdaten:", (d.data || []).length, JSON.stringify(d.meta || {}).slice(0, 200));
+  return { ok: true, status: r.status, list };
 }
+async function giphySearch(env, q, limit) { return (await giphyRaw(env, q, limit)).list; }
 async function routeGifs(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
-  if (!env.GIPHY_API_KEY) return json({ error: "gifs_off" }, 503);
+  if (!String(env.GIPHY_API_KEY || "").trim()) return json({ error: "gifs_off" }, 503);
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 50);
-  return json({ gifs: await giphySearch(env, q, 12) });
+  const r = await giphyRaw(env, q, 12);
+  if (!r.ok) return json({ error: "gifs_failed", status: r.status }, 502);
+  return json({ gifs: r.list });
 }
 // Für KI-Vorschläge ohne Auswahl das erste passende GIF vorwählen
 async function preselectGifs(env, effects) {
@@ -538,7 +546,7 @@ function sanitizeStyle(st) {
     cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
     licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(3, Math.round(Number(st.haut) || 0))),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };

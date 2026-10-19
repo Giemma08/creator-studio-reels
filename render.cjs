@@ -172,7 +172,7 @@ function buildAss(words, map, style, layout) {
   ];
   const kept = words.filter(w => !w.cut);
   if (style.hook !== false && style.hook_titel) {
-    const end = Math.min(3.2, map.total);
+    const hd = Number(style.hook_dur); const end = Math.min(isFinite(hd) && hd >= 1 ? hd : 3.2, map.total);
     lines.push("Dialogue: 1," + assTime(0) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(120,200)}" + assText(caseOf({}, style.hook_titel)));
   }
   if (style.captions === false) return lines.join("\n") + "\n";
