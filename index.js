@@ -232,7 +232,7 @@ async function routeList(request, env, url) {
   const id = url.searchParams.get("id");
   if (id) { const j = await getJob(env, s, id); return j ? json({ job: await publicJob(env, url.origin, j, true) }) : json({ error: "not_found" }, 404); }
   const kindFilter = url.searchParams.get("kind") === "transcript" ? "&kind=eq.transcript" : "&kind=in.(reel,clips)";
-  const rows = await db(env, "reel_jobs?user_id=eq." + s.user.id + kindFilter + "&select=id,created_at,updated_at,title,status,duration,renders,length,error,kind&order=created_at.desc&limit=50");
+  const rows = await db(env, "reel_jobs?user_id=eq." + s.user.id + kindFilter + "&status=neq.deleted&select=id,created_at,updated_at,title,status,duration,renders,length,error,kind&order=created_at.desc&limit=50");
   const list = [];
   for (const j of rows || []) list.push(await publicJob(env, url.origin, j, false));
   return json({ jobs: list });
@@ -744,10 +744,15 @@ async function routeImage(request, env) {
 async function routeDelete(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const j = await getJob(env, s, url.searchParams.get("id")); if (!j) return json({ error: "not_found" }, 404);
-  const list = await env.REELS_BUCKET.list({ prefix: "jobs/" + j.id + "/" });
-  if (list.objects.length) await env.REELS_BUCKET.delete(list.objects.map(o => o.key));
-  await db(env, "reel_jobs?id=eq." + j.id, { method: "DELETE", prefer: "return=minimal" });
-  return json({ ok: true });
+  // 2.19.1: erst Verweise lösen (geschnittene Clips, geplante Posts), dann löschen; klappt das nicht, wird das Reel ausgeblendet
+  try { await db(env, "reel_jobs?source_id=eq." + j.id, { method: "PATCH", body: { source_id: null }, prefer: "return=minimal" }); } catch (e) { console.log("Clip-Verweise", e.message); }
+  let hard = true;
+  try { await db(env, "reel_jobs?id=eq." + j.id, { method: "DELETE", prefer: "return=minimal" }); }
+  catch (e) { hard = false; console.log("Löschen über Datenbank nicht möglich, wird ausgeblendet:", e.message);
+    try { await db(env, "reel_jobs?id=eq." + j.id, { method: "PATCH", body: { status: "deleted" }, prefer: "return=minimal" }); }
+    catch (e2) { console.log("Ausblenden fehlgeschlagen:", e2.message); return json({ error: "delete_failed", detail: String(e.message).slice(0, 200) }, 500); } }
+  try { const list = await env.REELS_BUCKET.list({ prefix: "jobs/" + j.id + "/" }); if (list.objects.length) await env.REELS_BUCKET.delete(list.objects.map(o => o.key)); } catch (e) { console.log("Dateien löschen", e.message); }
+  return json({ ok: true, hard });
 }
 
 // Medien ausliefern, mit Range-Unterstützung für Video
