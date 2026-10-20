@@ -43,9 +43,64 @@ async function callback(job, body) {
 function hdr(job) { return { "x-internal": job.token }; }
 
 async function probe(file) {
-  const out = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "json", file]);
-  const j = JSON.parse(out);
-  return { duration: Number(j.format && j.format.duration) || 0, hasAudio: (j.streams || []).some(s => s.codec_type === "audio") };
+  const out = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", file]);
+  const j = JSON.parse(out), vs = (j.streams || []).find(s => s.codec_type === "video") || {};
+  let w = Number(vs.width) || 0, h = Number(vs.height) || 0; const rot = Math.abs(Number((vs.tags && vs.tags.rotate) || ((vs.side_data_list || [])[0] || {}).rotation || 0)); if (rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+  return { duration: Number(j.format && j.format.duration) || 0, hasAudio: (j.streams || []).some(s => s.codec_type === "audio"), width: w, height: h };
+}
+
+// Mehrere Clips (2.15): alle laden, auf 1080 × 1920 bringen, aneinanderhängen und als neues Original hochladen
+async function joinClips(job, dir) {
+  const n = Math.max(2, Math.min(6, Number(job.clips) || 2)), files = [];
+  for (let k = 1; k <= n; k++) { const f = path.join(dir, "clip" + k); await download(job.base + "/internal/reels/input/" + job.id + (k > 1 ? "/" + k : ""), hdr(job), f); files.push(f); }
+  const args = ["-y", "-loglevel", "error"], f = [];
+  const infos = [];
+  for (const fl of files) infos.push(await probe(fl));
+  files.forEach(fl => args.push("-i", fl));
+  infos.forEach((inf, i) => {
+    f.push("[" + i + ":v]fps=30,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p[v" + i + "]");
+    if (inf.hasAudio) f.push("[" + i + ":a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo[a" + i + "]");
+    else f.push("anullsrc=r=44100:cl=stereo,atrim=0:" + Math.max(0.1, inf.duration).toFixed(3) + "[a" + i + "]");
+  });
+  f.push(infos.map((_, i) => "[v" + i + "][a" + i + "]").join("") + "concat=n=" + n + ":v=1:a=1[v][a]");
+  const out = path.join(dir, "input");
+  args.push("-filter_complex", f.join(";"), "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4", out);
+  await run("ffmpeg", args);
+  await upload(job.base + "/internal/reels/output/" + job.id + "/joined.mp4", hdr(job), out, "video/mp4");
+  files.forEach(fl => { try { fs.unlinkSync(fl); } catch (e) {} });
+}
+
+// Karte aus einem Bild (2.16): abgerundet, Schatten; Foto mit weißem Rand und leicht schräg, Screenshot mit feinem Rand, Logo frei, Meme mit Text oben
+async function makeCard(src, out, art, size, text, dir) {
+  const w = size === "gross" ? 860 : size === "klein" ? 420 : 640, R0 = art === "logo" ? 0 : art === "meme" ? 20 : 30;
+  const pad = art === "foto" ? 16 : art === "screenshot" ? 3 : 0, padCol = art === "foto" ? "white" : "0xE2E2E2";
+  const chain = ["scale=" + (w - 2 * pad) + ":-2", "format=rgba"];
+  if (art === "meme" && text) { const tf = path.join(dir, "meme-" + Date.now() + ".txt"); fs.writeFileSync(tf, String(text).toLocaleUpperCase("de-DE").slice(0, 40));
+    chain.push("drawtext=fontfile=/usr/share/fonts/Anton-Regular.ttf:textfile=" + tf + ":fontsize=w*0.09:fontcolor=white:borderw=5:bordercolor=black:x=(w-text_w)/2:y=h*0.04"); }
+  if (pad) chain.push("pad=iw+" + 2 * pad + ":ih+" + 2 * pad + ":" + pad + ":" + pad + ":color=" + padCol);
+  if (R0) chain.push("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gt(abs(W/2-X),W/2-" + R0 + ")*gt(abs(H/2-Y),H/2-" + R0 + "),if(lte(hypot(" + R0 + "-(W/2-abs(W/2-X))," + R0 + "-(H/2-abs(H/2-Y)))," + R0 + "),alpha(X,Y),0),alpha(X,Y))'");
+  chain.push("pad=iw+80:ih+80:40:40:color=black@0");
+  let fc = "[0:v]" + chain.join(",") + ",split[c1][c2];[c2]geq=r=0:g=0:b=0:a='alpha(X,Y)*0.45',boxblur=16:4[sh];[sh][c1]overlay=0:-12" + (art === "foto" ? ",rotate=-2*PI/180:c=none:ow=rotw(-2*PI/180):oh=roth(-2*PI/180)" : "") + "[o]";
+  await run("ffmpeg", ["-y", "-loglevel", "error", "-i", src, "-filter_complex", fc, "-map", "[o]", "-frames:v", "1", out]);
+  return out;
+}
+
+// Querformat → Hochformat (2.18): mittlere Gesichtsposition (0..1 der Breite), sonst null
+async function faceX(input, info, dir) {
+  if (!(info.width && info.height && info.width / info.height > 0.7)) return null;
+  const py = path.join(dir, "facex.py");
+  fs.writeFileSync(py, "import sys, cv2\nc=cv2.VideoCapture(sys.argv[1]); n=int(c.get(7) or 0); fps=c.get(5) or 30; step=max(1,int(fps)); xs=[]\ndet=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')\ni=0\nwhile True:\n  ok=c.grab()\n  if not ok: break\n  if i%step==0:\n    ok,f=c.retrieve()\n    if ok:\n      g=cv2.cvtColor(cv2.resize(f,(640,int(640*f.shape[0]/f.shape[1]))),cv2.COLOR_BGR2GRAY); fs=det.detectMultiScale(g,1.15,5,minSize=(40,40))\n      if len(fs): x,y,w,h=max(fs,key=lambda r:r[2]*r[3]); xs.append((x+w/2)/640)\n  i+=1\n  if len(xs)>=40: break\nxs.sort(); print(xs[len(xs)//2] if xs else -1)\n");
+  try { const r = Number(String(await run("python3", [py, input])).trim()); return r > 0 ? r : null; } catch (e) { console.log("Gesichtssuche übersprungen", e.message); return null; }
+}
+// Titelkarte (2.18): cremefarbener Hintergrund mit bis zu 3 Polaroid-Fotos
+async function makeTitleCard(job, keys, dir) {
+  const POS = [[[290, 330]], [[90, 300], [480, 560]], [[60, 260], [470, 330], [260, 700]]], files = [];
+  for (let i = 0; i < Math.min(3, keys.length); i++) { const f = path.join(dir, "tk" + i); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(keys[i]), hdr(job), f); files.push(await makeCard(f, path.join(dir, "tkc" + i + ".png"), "foto", "mittel", "", dir)); }
+  const out = path.join(dir, "titelkarte.png"), pos = POS[Math.max(0, files.length - 1)] || [], args = ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0xF7F1E8:s=1080x1920"];
+  files.forEach(f => args.push("-i", f));
+  let fc = "", v = "0:v"; files.forEach((f, i) => { const sc = files.length === 1 ? 1 : files.length === 2 ? 0.8 : 0.7; fc += "[" + (i + 1) + ":v]scale=iw*" + sc + ":-1,rotate=" + [-0.1, 0.07, -0.04][i] + ":c=none:ow=rotw(" + [-0.1, 0.07, -0.04][i] + "):oh=roth(" + [-0.1, 0.07, -0.04][i] + ")[p" + i + "];[" + v + "][p" + i + "]overlay=" + pos[i][0] + ":" + pos[i][1] + "[b" + i + "];"; v = "b" + i; });
+  args.push("-filter_complex", (fc || "[0:v]null[b0];").replace(/;$/, ""), "-map", "[" + (files.length ? v : "b0") + "]", "-frames:v", "1", out);
+  await run("ffmpeg", args); return out;
 }
 
 async function getInput(job, dir) {
@@ -57,6 +112,7 @@ async function getInput(job, dir) {
 // ---------- Analyse ----------
 async function analyze(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
+  if (!job.clip && Number(job.clips) > 1) await joinClips(job, dir);
   const input = job.clip ? await cutClip(job, dir) : await getInput(job, dir);
   const info = await probe(input);
   if (info.duration > (job.max_seconds || 185)) throw new Error("too_long");
@@ -67,6 +123,7 @@ async function analyze(job) {
     const fd = new FormData();
     fd.append("file", new Blob([fs.readFileSync(audio)], { type: "audio/mpeg" }), "audio.mp3");
     fd.append("model", "whisper-1");
+    if (job.vocab) fd.append("prompt", String(job.vocab).slice(0, 800));
     fd.append("response_format", "verbose_json");
     fd.append("timestamp_granularities[]", "word");
     if (job.lang) fd.append("language", job.lang);
@@ -151,27 +208,30 @@ function faceCheck(layout, segs, map, style) {
   return moves;
 }
 
+const LOCALES = { de: "de-DE", en: "en-US", fr: "fr-FR", it: "it-IT", es: "es-ES", pt: "pt-PT", nl: "nl-NL", sv: "sv-SE", ca: "ca-ES" };
 async function render(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
   const input = await getInput(job, dir);
   const info = await probe(input);
   const words = (job.words || []).map(w => Object.assign({}, w));
-  const segs = R.keptSegments(words, info.duration);
+  let segs = R.keptSegments(words, info.duration, (job.style || {}).pausen);
+  if (!segs.length && !words.length && info.duration > 0.5) segs = [{ s: 0, e: info.duration }]; // Stimmungs-Reel ohne Sprechen (2.19)
   if (!segs.length) throw new Error("nothing_left");
   const map = R.remapper(segs);
   const style = Object.assign({ accent: "#E6007E", font: "Poppins" }, job.style || {}, { hook_titel: job.hook_titel || "" });
   // 1. Wo ist die Person? Kleine Vorschau in 1080x1920 (wie das Reel), 3 Bilder pro Sekunde
-  let layout = null;
+  let layout = null, cropX = null;
   try {
     const proxy = path.join(dir, "proxy.mp4");
-    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-an", "-vf", "fps=3,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", proxy]);
+    cropX = await faceX(input, info, dir);
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-an", "-vf", "fps=3,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" + (cropX != null ? ":'max(0,min(iw-ow,iw*" + cropX.toFixed(4) + "-ow/2))':0" : ""), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", proxy]);
     layout = JSON.parse(await run("python3", [path.join(__dirname, "layout.py"), proxy]));
   } catch (e) { console.log("Vermessung übersprungen", e.message); }
   // 2. Effekte als durchsichtige Ebenen rendern (HyperFrames)
   const effects = [], hide = [], report = [];
   if (!layout || !layout.found) report.push("Kein Gesicht erkannt: Die Untertitel stehen unten in der Mitte.");
   const planned = E.planEffects((job.style && job.style.effects) || [], words, map, layout);
-  const wanted = ((job.style && job.style.effects) || []).filter(x => !x.off && (x.type !== "gif" || x.mp4)).length;
+  const wanted = ((job.style && job.style.effects) || []).filter(x => !x.off && (x.type !== "gif" || x.mp4 || x.src)).length;
   if (wanted > planned.length) report.push((wanted - planned.length) + (wanted - planned.length === 1 ? " Effekt passte" : " Effekte passten") + " zeitlich nicht ins Reel und " + (wanted - planned.length === 1 ? "wurde" : "wurden") + " weggelassen.");
   const cutouts = [];
   for (let i = 0; i < planned.length; i++) {
@@ -179,16 +239,17 @@ async function render(job) {
     if (E.CUTOUT.includes(it.fx.type)) { cutouts.push({ it, fxDir }); continue; } // später, nach dem Grundschnitt
     if (it.fx.type === "gif") { // GIF laden und direkt mit ffmpeg einsetzen
       try {
-        if (!/^https:\/\/media\d?\.giphy\.com\//.test(it.fx.mp4 || "")) throw new Error("ungültige GIF-Adresse");
-        const r = await fetch(it.fx.mp4); if (!r.ok) throw new Error("GIF nicht ladbar " + r.status);
-        const gf = path.join(dir, "gif" + i + ".mp4"); fs.writeFileSync(gf, Buffer.from(await r.arrayBuffer()));
-        effects.push({ file: gf, t0: it.t0, d: it.d, gif: true, top: it.place.top, width: 620 });
+        const sticker = it.fx.art === "sticker" && it.fx.src, src = sticker ? it.fx.src : it.fx.mp4;
+        if (!/^https:\/\/media\d?\.giphy\.com\//.test(src || "")) throw new Error("ungültige GIF-Adresse");
+        const r = await fetch(src); if (!r.ok) throw new Error("GIF nicht ladbar " + r.status);
+        const gf = path.join(dir, "gif" + i + (sticker ? ".gif" : ".mp4")); fs.writeFileSync(gf, Buffer.from(await r.arrayBuffer()));
+        effects.push({ file: gf, t0: it.t0, d: it.d, gif: true, sticker: !!sticker, top: it.place.top, width: Number(it.fx.gw) || 620 });
         if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
       } catch (e) { console.log("GIF übersprungen", e.message); report.push("Ein GIF konnte nicht geladen werden und wurde weggelassen."); }
       continue;
     }
     try {
-      E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "" }, ASSET_DIR);
+      E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || LOCALES[job.lang] || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "" }, ASSET_DIR);
       await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
       effects.push({ file: path.join(fxDir, "out.webm"), t0: it.t0, d: it.d });
       if (it.place.hideCaptions) hide.push([it.t0, it.t1]);
@@ -208,14 +269,17 @@ async function render(job) {
       if (r.ok && /^image\/(png|jpeg|webp)/.test(ct)) { const buf = Buffer.from(await r.arrayBuffer()); if (buf.length < 3e6) { logoFile = path.join(dir, "logo." + (ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg")); fs.writeFileSync(logoFile, buf); } }
     } catch (e) { console.log("Logo übersprungen", e.message); }
   }
+  R.setFontDir(FONT_DIR);
   const assFile = path.join(dir, "subs.ass");
+  if (!style.lang) style.lang = job.lang || "de";
   fs.writeFileSync(assFile, R.buildAss(words, map, style, layout));
   const look = R.LOOKS[style.look] || null;
   // Licht und Haut: zusätzliche Filter zum Look (Licht -2 bis +3, Haut 0 bis 3)
-  const licht = Math.max(-2, Math.min(3, Number(style.licht) || 0)), haut = Math.max(0, Math.min(3, Number(style.haut) || 0));
+  const licht = Math.max(-2, Math.min(3, Number(style.licht) || 0)), haut = Math.max(0, Math.min(5, Number(style.haut) || 0));
   const extra = [];
   if (licht) extra.push("eq=gamma=" + (1 + 0.09 * licht).toFixed(2) + ":brightness=" + (0.012 * licht).toFixed(3) + ":contrast=" + (1 + 0.015 * Math.abs(licht)).toFixed(3));
-  if (haut) extra.push("smartblur=lr=" + (1.0 + 0.6 * haut).toFixed(1) + ":ls=" + (0.3 + 0.17 * haut).toFixed(2) + ":lt=" + (3 + 3 * haut));
+  if (haut) extra.push("smartblur=lr=" + Math.min(5, 1.0 + 0.6 * haut).toFixed(1) + ":ls=" + Math.min(1, 0.3 + 0.17 * haut).toFixed(2) + ":lt=" + (3 + 3 * haut));
+  extra.push(...R.colorFilters(style));
   const gradeFull = [look ? look.grade : "", extra.join(",")].filter(Boolean).join(",");
   const gradeBase = look ? look.grade : "";
   if (look && !style.caption_style) style.caption_style = look.caption;
@@ -225,13 +289,36 @@ async function render(job) {
   const zoomScale = style.zoom_scale == null ? 1 : Number(style.zoom_scale);
   const zoomSet = new Set(zoomWords);
   const zooms = zoomScale > 0 ? R.zoomRanges(kept, w => zoomSet.has(w), map) : [];
+  const vfx = R.wordEffects(kept, map, style.accent);
   const sounds = ((look && look.sounds === false) || style.sounds_off ? [] : kept).filter(w => w.sound && R.SOUNDS.includes(w.sound)).map(w => ({ file: path.join(SOUND_DIR, w.sound + ".wav"), t: Math.max(0, map(w.s) - 0.05) }));
   const images = [];
   for (const w of kept.filter(x => x.image && x.image.key)) {
     const f = path.join(dir, "img-" + images.length);
     await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(w.image.key), hdr(job), f);
-    images.push({ file: f, t: map(w.s), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: w.image.pos || "oben", size: w.image.size || "mittel" });
+    const im = { file: f, t: map(w.s), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: w.image.pos || "oben", size: w.image.size || "mittel" };
+    if (w.image.art) { try { im.file = await makeCard(f, path.join(dir, "card-" + images.length + ".png"), w.image.art, im.size, w.image.text, dir); im.card = true; } catch (e) { console.log("Karte übersprungen", e.message); } }
+    images.push(im);
   }
+  // Ende (2.16): Freebie-Vorschau als Foto-Karte in den letzten Sekunden
+  const ende = style.ende || {};
+  if (ende.freebie_key && /^jobs\//.test(ende.freebie_key)) { try {
+    const f = path.join(dir, "freebie"); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(ende.freebie_key), hdr(job), f);
+    const d = Math.min(Math.max(2, Number(ende.dauer) || 3.5), map.total), file = await makeCard(f, path.join(dir, "freebie.png"), "foto", "klein", "", dir);
+    images.push({ file, t: Math.max(0, map.total - d), dur: d, card: true, y: Math.round(R.endeLayout(ende).card / 100 * 1920) - 40 });
+  } catch (e) { console.log("Freebie übersprungen", e.message); } }
+  // Bild-in-Bild (2.19): zweites Video klein in einer Ecke
+  const pips = [];
+  for (const w of kept.filter(x => x.pip && x.pip.key)) { try { const f = path.join(dir, "pip-" + pips.length); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(w.pip.key), hdr(job), f);
+    pips.push({ file: f, t: map(w.s), d: Math.min(8, Math.max(1, Number(w.pip.dur) || 3)), pos: w.pip.pos || "oben-rechts", size: w.pip.size || "klein" }); } catch (e) { console.log("Bild-in-Bild übersprungen", e.message); } }
+  // Geteilter Bildschirm im Hook und Titelkarte (2.18)
+  let split = null, card = null;
+  if (style.split && style.split.key) { try { const f = path.join(dir, "split"); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(style.split.key), hdr(job), f);
+    split = { file: f, d: Math.min(map.total, Math.max(1.5, Number(style.split.dauer) || 3)), fy: layout && layout.found ? ((layout.head.top + layout.head.chin) / 2) / 1920 : 0.4 }; } catch (e) { console.log("Geteilter Bildschirm übersprungen", e.message); } }
+  const tkd = R.titelkarteDur(style);
+  if (tkd) { try { card = { file: await makeTitleCard(job, (style.titelkarte.keys || []).filter(k => /^jobs\//.test(k)), dir), d: tkd }; } catch (e) { console.log("Titelkarte übersprungen", e.message); } }
+  // Schleife zum Anfang: erstes Bild für die Überblendung am Ende
+  let loopFrame = null;
+  if (ende.schleife) { try { loopFrame = path.join(dir, "first.png"); await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", segs[0].s.toFixed(3), "-i", input, "-frames:v", "1", "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" + (cropX != null ? ":'max(0,min(iw-ow,iw*" + cropX.toFixed(4) + "-ow/2))':0" : "") + ",setsar=1" + (gradeFull ? "," + gradeFull : ""), loopFrame]); } catch (e) { loopFrame = null; console.log("Schleife übersprungen", e.message); } }
   // Freistellungs-Effekte: Grundschnitt ohne Untertitel, dann pro Effekt freistellen und Ebenen zusammensetzen
   const underlays = []; let cutoutFailed = 0;
   if (cutouts.length) {
@@ -239,7 +326,7 @@ async function render(job) {
     const base = path.join(dir, "base.mp4");
     let baseOk = false;
     if (job.replicate_key) {
-      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, grade: gradeFull, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
+      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, cropX, grade: gradeFull, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), dauerzoom: !!style.dauerzoom && zoomScale > 0, vfx, vignette: !!style.vignette, koernung: !!style.koernung, loopFrame, cropX, voice: style.stimme, split, card, pips, tempo: Number(style.tempo) || 1, assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
       catch (e) { console.log("Grundschnitt fehlgeschlagen", e.message.slice(0, 300)); }
     }
     for (let i = 0; i < cutouts.length; i++) {
@@ -253,7 +340,7 @@ async function render(job) {
         let fxFile = null;
         const needsLayer = !["greenscreen", "popout"].includes(it.fx.type) || it.fx.titel;
         if (needsLayer) {
-          E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "", head: layout && layout.head }, ASSET_DIR);
+          E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || LOCALES[job.lang] || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "", head: layout && layout.head }, ASSET_DIR);
           await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
           fxFile = path.join(fxDir, "out.webm");
         }
@@ -272,14 +359,14 @@ async function render(job) {
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.mp4", hdr(job), out, "video/mp4");
   await upload(job.base + "/internal/reels/output/" + job.id + "/final.jpg", hdr(job), thumb, "image/jpeg");
   try { // Kontrollbild: Anfang, Effekt-Momente, Ende
-    const T = map.total, ts = [Math.min(1.2, T * 0.1)];
-    planned.slice(0, 3).forEach(it => ts.push(it.t0 + it.d * 0.55));
+    const TP = Math.max(1, Number(style.tempo) || 1), T = map.total / TP, ts = [Math.min(1.2, T * 0.1)];
+    planned.slice(0, 3).forEach(it => ts.push((it.t0 + it.d * 0.55) / TP));
     [0.35, 0.6, 0.85].forEach(f => { if (ts.length < 6) ts.push(T * f); });
     const sheet = path.join(dir, "check.jpg");
     await run("python3", [path.join(__dirname, "sheet.py"), out, sheet, ts.sort((a, b) => a - b).slice(0, 6).map(x => Math.max(0, Math.min(T - 0.1, x)).toFixed(2)).join(",")]);
     await upload(job.base + "/internal/reels/output/" + job.id + "/check.jpg", hdr(job), sheet, "image/jpeg");
   } catch (e) { console.log("Kontrollbild übersprungen", e.message); }
-  return { status: "done", length: map.total, effects_used: effects.length + underlays.length, cutout_failed: cutoutFailed, report: report.slice(0, 10), layout: layout ? { framing: layout.framing, found: layout.found } : null };
+  return { status: "done", length: map.total / Math.max(1, Number(style.tempo) || 1), effects_used: effects.length + underlays.length, cutout_failed: cutoutFailed, report: report.slice(0, 10), layout: layout ? { framing: layout.framing, found: layout.found } : null };
 }
 
 // ---------- Lange Aufnahmen in Text umwandeln (Repurposing) ----------

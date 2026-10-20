@@ -55,6 +55,10 @@ export default {
       if (p === "/api/reels/gifs" && m === "GET") return await routeGifs(request, env, url);
       if (p === "/api/reels/notes" && m === "POST") return await routeNotes(request, env, url);
       if (p === "/api/reels/cmd" && m === "POST") return await routeCmd(request, env);
+      if (p === "/api/reels/prefs") return await routePrefs(request, env, m);
+      if (p === "/api/reels/pip" && m === "PUT") return await routePip(request, env, url);
+      if (p === "/api/reels/caption" && m === "POST") return await routeCaption(request, env);
+      if (p === "/api/reels/profil" && m === "POST") return await routeProfil(request, env, url);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
       return json({ error: "not_found" }, 404);
@@ -269,7 +273,8 @@ async function routePart(request, env, url) {
   if (!j || j.status !== "uploading" || !j.upload_id) return json({ error: "not_found" }, 404);
   const n = Number(url.searchParams.get("n"));
   if (!(n >= 1 && n <= 10000)) return json({ error: "server" }, 400);
-  const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, "input"), j.upload_id);
+  const clip = Math.max(1, Math.min(6, Number(url.searchParams.get("clip")) || 1)); // mehrere Clips (2.15)
+  const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, clip > 1 ? "input" + clip : "input"), j.upload_id);
   const part = await mp.uploadPart(n, request.body);
   return json({ partNumber: part.partNumber, etag: part.etag });
 }
@@ -324,8 +329,15 @@ async function routeComplete(request, env, url) {
   const j = await getJob(env, s, b.id);
   if (!j || j.status !== "uploading" || !j.upload_id) return json({ error: "not_found" }, 404);
   const parts = (Array.isArray(b.parts) ? b.parts : []).map(x => ({ partNumber: Number(x.partNumber), etag: String(x.etag) }));
-  const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, "input"), j.upload_id);
+  const clip = Math.max(1, Math.min(6, Number(b.clip) || 1)), clips = Math.max(1, Math.min(6, Number(b.clips) || 1));
+  const mp = env.REELS_BUCKET.resumeMultipartUpload(keyOf(j.id, clip > 1 ? "input" + clip : "input"), j.upload_id);
   await mp.complete(parts);
+  // Mehrere Clips (2.15): nächsten Upload vorbereiten, erst nach dem letzten Clip geht es weiter
+  if (j.kind !== "clips" && j.kind !== "transcript" && clip < clips) {
+    const nx = await env.REELS_BUCKET.createMultipartUpload(keyOf(j.id, "input" + (clip + 1)));
+    await patchJob(env, j.id, { upload_id: nx.uploadId });
+    return json({ ok: true, next: clip + 1 });
+  }
   if (j.kind === "clips") {
     await patchJob(env, j.id, { status: "analyzing", upload_id: null });
     try { await startContainer(env, url.origin, j, "clips", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "premium"), lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
@@ -348,7 +360,7 @@ async function routeComplete(request, env, url) {
   const style = sanitizeStyle(b.style);
   await patchJob(env, j.id, { status: "analyzing", upload_id: null, style });
   try {
-    await startContainer(env, url.origin, j, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185 });
+    await startContainer(env, url.origin, j, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: clips, vocab: ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800) });
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
     await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: need, p_action: "reel_edit" } });
@@ -379,7 +391,8 @@ function sanitizeEffects(list) {
     if (x.type === "diagramm") { o.titel = s(x.titel, 30); o.wert = s(x.wert, 16); }
     if (x.type === "vergleich") { o.vorher = s(x.vorher, 50); o.nachher = s(x.nachher, 50); }
     if (x.type === "nachricht") { o.nachrichten = (Array.isArray(x.nachrichten) ? x.nachrichten : []).slice(0, 3).map(m => s(m, 70)).filter(Boolean); }
-    if (x.type === "emoji") { o.emoji = Array.from(String(x.emoji || "")).slice(0, 2).join(""); }
+    if (x.type === "emoji") { o.emoji = Array.from(String(x.emoji || "")).slice(0, 8).join(""); if (x.esize != null && isFinite(Number(x.esize))) o.esize = Math.max(100, Math.min(500, Math.round(Number(x.esize)))); }
+    if ((x.type === "emoji" || x.type === "gif") && x.gy != null && x.gy !== "" && isFinite(Number(x.gy))) o.gy = Math.max(8, Math.min(85, Math.round(Number(x.gy))));
     if (x.type === "hinter") { o.woerter = (Array.isArray(x.woerter) ? x.woerter : []).slice(0, 3).map(w => ({ text: s(w && w.text, 12), wort: i(w && w.wort) })).filter(w => w.text); }
     if (x.type === "spotlight") { o.text = s(x.text, 30); }
     if (x.type === "greenscreen") { o.titel = s(x.titel, 50); o.text = s(x.text, 60); }
@@ -388,7 +401,8 @@ function sanitizeEffects(list) {
     if (x.type === "gif") {
       const giphy = u => /^https:\/\/media\d?\.giphy\.com\/[A-Za-z0-9_\/.?=&-]+$/.test(String(u || "")) ? String(u) : "";
       o.suche = s(x.suche, 40); o.gif_id = /^[A-Za-z0-9]{1,40}$/.test(String(x.gif_id || "")) ? String(x.gif_id) : "";
-      o.mp4 = giphy(x.mp4); o.preview = giphy(x.preview); o.titel = s(x.titel, 60);
+      o.mp4 = giphy(x.mp4); o.src = giphy(x.src); o.art = x.art === "sticker" ? "sticker" : "gif"; o.preview = giphy(x.preview); o.titel = s(x.titel, 60);
+      if (x.gw != null && isFinite(Number(x.gw))) o.gw = Math.max(240, Math.min(1000, Math.round(Number(x.gw))));
       o.w = Math.max(1, Math.min(2000, Number(x.w) || 480)); o.h = Math.max(1, Math.min(2000, Number(x.h) || 270));
     }
     if (x.off) o.off = true;
@@ -454,6 +468,60 @@ async function routeNotes(request, env, url) {
   return json({ antwort: String(d.antwort || "").slice(0, 400), changed: [...new Set(changed)], job: await publicJob(env, url.origin, fresh, true), credits: r.credits });
 }
 
+// ---------------- Eigene Einstellungen (2.18): Wörterbuch und eigene Reel-Stile ----------------
+const prefsKey = uid => "users/" + uid + "/reel-prefs.json";
+async function readPrefs(env, uid) { try { const o = await env.REELS_BUCKET.get(prefsKey(uid)); return o ? JSON.parse(await o.text()) : {}; } catch (e) { return {}; } }
+async function routePrefs(request, env, m) {
+  const s = await session(request, env); if (s.err) return s.err;
+  if (m === "GET") { const p = await readPrefs(env, s.user.id); return json({ dict: p.dict || [], styles: p.styles || [], notes: p.notes || [] }); }
+  if (m !== "POST") return json({ error: "server" }, 405);
+  const b = await readJson(request) || {}, cur = await readPrefs(env, s.user.id), str = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
+  if (Array.isArray(b.notes)) cur.notes = b.notes.map(x => str(x, 160)).filter(Boolean).slice(0, 30);
+  if (Array.isArray(b.dict)) cur.dict = b.dict.map(x => ({ a: str(x && x.a, 60), b: str(x && x.b, 60) })).filter(x => x.a && x.b).slice(0, 200);
+  if (Array.isArray(b.styles)) cur.styles = b.styles.map(x => ({ name: str(x && x.name, 40), style: sanitizeStyle(x && x.style || {}) })).filter(x => x.name).slice(0, 20).map(x => { ["texts", "cover", "split", "titelkarte"].forEach(k => delete x.style[k]); if (x.style.ende) delete x.style.ende.freebie_key; return x; });
+  await env.REELS_BUCKET.put(prefsKey(s.user.id), JSON.stringify(cur), { httpMetadata: { contentType: "application/json" } });
+  return json({ ok: true, dict: cur.dict || [], styles: cur.styles || [], notes: cur.notes || [] });
+}
+
+// ---------------- Bild-in-Bild, Beschreibung, Reel-Profil (2.19) ----------------
+async function routePip(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const j = await getJob(env, s, url.searchParams.get("id")); if (!j) return json({ error: "not_found" }, 404);
+  const ct = request.headers.get("content-type") || "", ext = /quicktime/.test(ct) ? "mov" : /webm/.test(ct) ? "webm" : "mp4";
+  if (!/^video\//.test(ct)) return json({ error: "file_type" }, 400);
+  if (Number(request.headers.get("content-length") || 0) > 95 * 1024 * 1024) return json({ error: "file_size" }, 400);
+  const name = "pip-" + crypto.randomUUID().slice(0, 8) + "." + ext;
+  await env.REELS_BUCKET.put(keyOf(j.id, name), request.body, { httpMetadata: { contentType: ct } });
+  return json({ key: keyOf(j.id, name), url: await mediaUrl(env, new URL(request.url).origin, j.id, name) });
+}
+const LN9 = { de: "Deutsch", en: "Englisch", fr: "Französisch", it: "Italienisch", es: "Spanisch", pt: "Portugiesisch", nl: "Niederländisch", sv: "Schwedisch", ca: "Katalanisch" };
+async function routeCaption(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  const lang = LN9[s.acc.content_lang] ? s.acc.content_lang : "de", notes = ((await readPrefs(env, s.user.id)).notes || []).join("; ");
+  const text = (Array.isArray(j.words) ? j.words : []).filter(w => !w.cut).map(w => w.w).join(" ").slice(0, 8000) || String(b.stimmung || "").slice(0, 2000);
+  if (b.gedicht) { const r0 = await charged(env, s, "kira_befehl", { instructions: "Du schreibst den Text für ein Stimmungs-Reel ohne Sprechen auf " + LN9[lang] + ": 5 bis 8 kurze, poetische Zeilen (je höchstens 7 Wörter), ruhig und bildhaft, passend zum Thema. Markiere in 2 bis 3 Zeilen ein Schlüsselwort mit *Sternchen*. Antworte NUR mit JSON: {\"zeilen\":[\"…\"]}" + (notes ? "\nVorlieben: " + notes : ""), input: "Thema: " + String(b.gedicht).slice(0, 300) }, { tier: "standard", maxTokens: 1000 }); if (r0.err) return r0.err;
+    let d0 = {}; try { d0 = JSON.parse(String(r0.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const m = /\{[\s\S]*\}/.exec(String(r0.text)); try { d0 = m ? JSON.parse(m[0]) : {}; } catch (e2) {} }
+    return json({ zeilen: (Array.isArray(d0.zeilen) ? d0.zeilen : []).map(x => String(x).slice(0, 80)).slice(0, 10), credits: r0.credits }); }
+  const instructions = "Du schreibst die Beschreibung (Caption) für ein Instagram-Reel auf " + LN9[lang] + ". Natürlich, nahbar, kein Werbesprech, keine Floskeln. Aufbau: erste Zeile als Hook (max. 12 Wörter), dann 2 bis 4 kurze Absätze mit dem Kern, dann eine Frage oder ein Kommentar-Aufruf" + (b.stichwort ? " mit dem Stichwort " + String(b.stichwort).slice(0, 24) : "") + ". Höchstens 2 Emojis. Danach 5 bis 8 passende Hashtags (Mischung aus Nische und breiter). Antworte NUR mit JSON: {\"caption\":\"…\",\"hashtags\":[\"#…\"]}" + (notes ? "\nVorlieben der Nutzerin: " + notes : "");
+  const r = await charged(env, s, "kira_befehl", { instructions, input: "Überschrift: " + (j.hook_titel || "") + "\nTranskript: " + text }, { tier: "standard", maxTokens: 1500 }); if (r.err) return r.err;
+  let d = {}; try { d = JSON.parse(String(r.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const m = /\{[\s\S]*\}/.exec(String(r.text)); try { d = m ? JSON.parse(m[0]) : {}; } catch (e2) {} }
+  return json({ caption: String(d.caption || "").slice(0, 2200), hashtags: (Array.isArray(d.hashtags) ? d.hashtags : []).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).slice(0, 12), credits: r.credits });
+}
+// Reel-Profil aus Vorbild-Reels: Standbilder ansehen und daraus Stil-Vorschläge und Notizen ableiten
+async function routeProfil(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  const keys = (Array.isArray(b.keys) ? b.keys : []).filter(k => typeof k === "string" && k.startsWith("jobs/" + j.id + "/img-")).slice(0, 3); if (!keys.length) return json({ error: "server" }, 400);
+  const content = [{ type: "input_text", text: "Das sind Standbilder aus Reels, die der Nutzerin gefallen." + (b.hinweis ? " Ihr Hinweis: " + String(b.hinweis).slice(0, 300) : "") }];
+  for (const k of keys) content.push({ type: "input_image", image_url: await mediaUrl(env, url.origin, j.id, k.split("/").pop()) });
+  const instructions = "Analysiere den Stil der Reels (Untertitel, Schrift, Farben, Kästen, Position, Textmenge, Bewegung, Bildlook). Übersetze ihn in Einstellungen für einen Reel-Editor und kurze Merksätze. Antworte NUR mit JSON: {\"stil\":{\"caption_style\":\"klar|box|elegant|leise|gross|plakat|handschrift|kino|pop|karaoke|neon|editorial|mono|pastell|kontur|magazin\",\"cap_font\":\"Poppins|Montserrat|Inter|DM Sans|Outfit|Anton|Bebas Neue|Playfair Display|DM Serif Display|Lora|Caveat Brush\",\"cap_color\":\"#RRGGBB\",\"cap_box\":\"none|dark|light|accent|custom\",\"cap_box_bg\":\"#RRGGBB\",\"cap_n\":1,\"cap_case\":\"upper|normal\",\"position\":\"auto|oben|mitte|unten\",\"hook_box\":\"accent|black|white|none|custom\",\"hook_bg\":\"#RRGGBB\",\"hook_font\":\"Poppins|Playfair Display|Lora|DM Sans\",\"filter\":\"warm|kuehl|hell|kontrast|sw|vintage\",\"tempo\":1.05,\"dauerzoom\":true},\"merksaetze\":[\"kurz, z. B. viel Bewegung, wenig Text\"],\"zusammenfassung\":\"ein Satz auf Deutsch\"}. Nur Felder, die du wirklich erkennst.";
+  const r = await charged(env, s, "kira_befehl", { instructions, input: [{ role: "user", content }] }, { tier: "standard", maxTokens: 2000 }); if (r.err) return r.err;
+  let d = {}; try { d = JSON.parse(String(r.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const m = /\{[\s\S]*\}/.exec(String(r.text)); try { d = m ? JSON.parse(m[0]) : {}; } catch (e2) {} }
+  const stil = sanitizeStyle(Object.assign({}, d.stil || {})), want = Object.keys(d.stil || {}), out = {}; want.forEach(k => { if (stil[k] != null) out[k] = stil[k]; });
+  return json({ stil: out, merksaetze: (Array.isArray(d.merksaetze) ? d.merksaetze : []).map(x => String(x).slice(0, 160)).slice(0, 6), zusammenfassung: String(d.zusammenfassung || "").slice(0, 300), credits: r.credits });
+}
+
 // ---------------- KIRA-Befehle im Reel-Editor (2.13) ----------------
 // KIRA übersetzt einen Wunsch in Handgriffe. Der Editor führt sie sofort aus, die Kundin sieht das Ergebnis in der Vorschau und kann es rückgängig machen.
 const CMD_REEL = `Du steuerst einen Reel-Editor. Die Nutzerin beschreibt, was sich an ihrem Reel ändern soll. Übersetze ihren Wunsch in Handgriffe. Ändere nur, was sie verlangt.
@@ -476,6 +544,18 @@ Erlaubte Handgriffe:
 {"op":"woerter","von":12,"bis":18,"aktion":"schneiden|behalten|betonen|nicht_betonen|zoom|kein_zoom|ton|kein_ton","ton":"kling|ping|pop|whoosh|klick|tada"}   (zoom wirkt über den ganzen Bereich: langsam hinein, halten, langsam heraus; am besten 2 bis 6 Wörter. ton wirkt auf das erste Wort, nur mit aktion "ton")
 {"op":"wort_aendern","wort":7,"neu":"richtiges Wort"}   (Tippfehler oder falsch erkannte Wörter im Untertitel korrigieren)
 {"op":"fuellwoerter"}   (Ähs, Ähms und Mms herausschneiden)
+{"op":"text","art":"punkt|kapitel|liste|zahl|zitat|banner|notiz","text":"…","text2":"Beschriftung unter der Zahl","items":["Punkt 1","Punkt 2"],"von":12,"bis":30,"anim":"einblenden|hoch|pop|schreiben|marker","y":20}   (Text-Einblendung über dem Video ab Wort von bis Wort bis. punkt = Kernaussage mit Pfeil, kapitel = Kapitel-Überschrift oben, liste = laufende Checkliste (items erscheinen nacheinander), zahl = große Zahl, zitat = Zitat-Karte, banner = Stichwort-Banner, notiz = handschriftliche Notiz mit Pfeil. Kurz halten: höchstens 8 Wörter. y = Höhe in Prozent, nur wenn gewünscht)
+{"op":"text_aendern","i":0,"text":"…","anim":"pop","y":30,"entfernen":false}   (vorhandene Text-Einblendung Nummer i ändern oder entfernen)
+{"op":"woerter","von":12,"bis":14,"aktion":"zoom","art":"sanft|ruck|raus|schwenk|wackeln"}   (Zoom-Art: sanft = langsam hinein, ruck = schneller Zoom-Ruck, raus = herauszoomen, schwenk = langsamer Schwenk, wackeln = Handkamera-Wackeln)
+{"op":"wort_effekt","wort":12,"effekt":"glitch|blitz|wisch|unschaerfe|kein"}   (kurzer Übergangs-Effekt genau an diesem Wort)
+{"op":"bild","filter":"warm|kuehl|hell|kontrast|sw|vintage|kein","kontrast":0,"waerme":0,"saettigung":0,"schaerfe":0,"haut":0,"vignette":false,"koernung":false,"dauerzoom":false}   (nur genannte Felder; kontrast, waerme, saettigung -2 bis 2, schaerfe 0 bis 3, haut 0 bis 5)
+{"op":"ende","kommentar":"GUIDE","kommentar_text":"und ich schicke dir …","freebie_titel":"…","schleife":true}   (Ende des Reels: Kommentar-Stichwort, Freebie-Titel, Schleife zum Anfang; leerer Text entfernt das Element)
+{"op":"bild_karte","wort":12,"art":"foto|screenshot|logo|meme","text":"Meme-Text","position":"oben|mitte|unten","groesse":"klein|mittel|gross"}   (nur für Wörter, an denen schon ein Bild hängt)
+{"op":"stimme","wert":"sanft|stark|aus"}   (Stimme verbessern: Rauschen weg, Lautstärke ausgleichen)
+{"op":"versprecher"}   (Versprecher und doppelte Satzanfänge herausschneiden)
+{"op":"merken","text":"mehr Bewegung, weniger Text"}   (wenn sie sagt „merk dir …“ oder eine dauerhafte Vorliebe nennt)
+{"op":"tempo","wert":1.1}   (Geschwindigkeit 1 bis 1.25)
+{"op":"pausen","wert":"knapp|normal"}   (knapp = auch kurze Pausen raus)
 {"op":"look","wert":"business|warm|editorial|energie|kino|magazin|keiner"}
 {"op":"licht","belichtung":1,"haut":2}   (belichtung -2 bis 3, haut 0 bis 3, Werte sind absolut, nur genannte)
 {"op":"zoom_staerke","wert":1}   (0 aus bis 2 stark)
@@ -495,7 +575,8 @@ async function routeCmd(request, env) {
   const info = Object.assign({}, st); delete info.woerter;
   const LN = { de: "Deutsch", en: "Englisch", fr: "Französisch", it: "Italienisch", es: "Spanisch", pt: "Portugiesisch", nl: "Niederländisch", sv: "Schwedisch", ca: "Katalanisch" };
   const uiLang = LN[b.ui_lang] ? b.ui_lang : (LN[s.acc.ui_lang] ? s.acc.ui_lang : "de");
-  const instructions = CMD_REEL + "\n\nSchreib das Feld \"antwort\" auf " + LN[uiLang] + ". Neue Überschriften und korrigierte Wörter schreibst du in der Sprache des Transkripts.";
+  const notes = ((await readPrefs(env, s.user.id)).notes || []).join("; ");
+  const instructions = CMD_REEL + "\n\nSchreib das Feld \"antwort\" auf " + LN[uiLang] + ". Neue Überschriften und korrigierte Wörter schreibst du in der Sprache des Transkripts." + (notes ? "\nGemerkte Vorlieben der Nutzerin (berücksichtigen, wenn passend): " + notes : "");
   const input = "Aktuelle Einstellungen: " + JSON.stringify(info).slice(0, 4000) + "\n\nTranskript mit Wortnummern: " + transcript + "\n\nWunsch der Nutzerin: " + befehl;
   const r = await charged(env, s, "kira_befehl", { instructions, input }, { tier: "standard", maxTokens: 2500 });
   if (r.err) return r.err;
@@ -504,18 +585,20 @@ async function routeCmd(request, env) {
 }
 
 // ---------------- GIFs über Giphy (Powered by GIPHY) ----------------
-async function giphyRaw(env, q, limit) {
+async function giphyRaw(env, q, limit, art) {
   const key = String(env.GIPHY_API_KEY || "").trim();
   if (!key || !q) return { ok: false, status: 0, list: [] };
-  const u = "https://api.giphy.com/v1/gifs/search?api_key=" + encodeURIComponent(key) + "&q=" + encodeURIComponent(q) + "&limit=" + (limit || 12) + "&rating=g";
+  const u = "https://api.giphy.com/v1/" + (art === "sticker" ? "stickers" : "gifs") + "/search?api_key=" + encodeURIComponent(key) + "&q=" + encodeURIComponent(q) + "&limit=" + (limit || 12) + "&rating=g";
   let r; try { r = await fetch(u); } catch (e) { console.log("Giphy nicht erreichbar", e && e.message); return { ok: false, status: 0, list: [] }; }
   if (!r.ok) { console.log("Giphy Fehler", r.status, (await r.text().catch(() => "")).slice(0, 300)); return { ok: false, status: r.status, list: [] }; }
   const d = await r.json().catch(() => ({}));
   const list = (d.data || []).map(g => {
     const im = g.images || {}; const v = im.fixed_height || im.fixed_width || im.original || {}; const pr = im.fixed_width_small || im.fixed_height_small || im.fixed_width || v;
     const mp4 = v.mp4 || (im.original && im.original.mp4) || (im.original_mp4 && im.original_mp4.mp4) || (im.fixed_width && im.fixed_width.mp4) || "";
-    return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), mp4: mp4, preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
-  }).filter(g => g.mp4);
+    // Sticker haben einen durchsichtigen Hintergrund: dafür die .gif-Datei nehmen, MP4 kann keine Transparenz
+    if (art === "sticker") return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), art: "sticker", mp4: "", src: v.url || (im.original && im.original.url) || "", preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
+    return { gif_id: g.id, titel: String(g.title || "").slice(0, 60), art: "gif", mp4: mp4, src: "", preview: pr.webp || pr.url || "", w: Number(v.width) || 480, h: Number(v.height) || 270 };
+  }).filter(g => g.mp4 || g.src);
   if (!list.length) console.log("Giphy ohne Treffer", q, "Rohdaten:", (d.data || []).length, JSON.stringify(d.meta || {}).slice(0, 200));
   return { ok: true, status: r.status, list };
 }
@@ -524,7 +607,7 @@ async function routeGifs(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   if (!String(env.GIPHY_API_KEY || "").trim()) return json({ error: "gifs_off" }, 503);
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 50);
-  const r = await giphyRaw(env, q, 12);
+  const r = await giphyRaw(env, q, 12, url.searchParams.get("art") === "sticker" ? "sticker" : "gif");
   if (!r.ok) return json({ error: "gifs_failed", status: r.status }, 502);
   return json({ gifs: r.list });
 }
@@ -536,6 +619,28 @@ async function preselectGifs(env, effects) {
   return effects;
 }
 
+// Text-Einblendungen (2.14)
+const TEXT_ARTS = ["punkt", "kapitel", "liste", "zahl", "zitat", "banner", "notiz", "poesie"], TEXT_ANIMS = ["einblenden", "hoch", "pop", "schreiben", "marker"];
+const imgKey = k => typeof k === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(k);
+// Ende des Reels (2.16)
+function sanitizeEnde(e) {
+  if (!e || typeof e !== "object") return null;
+  const str = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
+  const o = { kommentar: str(e.kommentar, 24), kommentar_text: str(e.kommentar_text, 70), freebie_titel: str(e.freebie_titel, 60), freebie_key: typeof e.freebie_key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(png|jpg|jpeg|webp)$/i.test(e.freebie_key) ? e.freebie_key : "", schleife: !!e.schleife, dauer: Math.max(2, Math.min(6, Number(e.dauer) || 3.5)) };
+  return (o.kommentar || o.freebie_titel || o.freebie_key || o.schleife) ? o : null;
+}
+function sanitizeTexts(list) {
+  if (!Array.isArray(list)) return [];
+  const str = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
+  return list.slice(0, 40).map(t => {
+    if (!t || !TEXT_ARTS.includes(t.art)) return null;
+    const von = Math.round(Number(t.von)); if (!isFinite(von) || von < 0) return null;
+    const bis = t.bis == null || t.bis === "" || !isFinite(Number(t.bis)) ? null : Math.max(von, Math.round(Number(t.bis)));
+    const o = { id: str(t.id, 24), art: t.art, text: str(t.text, 160), at: t.at != null && isFinite(Number(t.at)) ? Math.max(0, Number(t.at)) : undefined, dur: t.dur != null && isFinite(Number(t.dur)) ? Math.max(0.5, Math.min(10, Number(t.dur))) : undefined, text2: str(t.text2, 40), von, bis, anim: TEXT_ANIMS.includes(t.anim) ? t.anim : "einblenden", y: t.y == null || t.y === "" || !isFinite(Number(t.y)) ? null : Math.max(4, Math.min(90, Math.round(Number(t.y)))), off: !!t.off };
+    if (t.art === "liste") o.items = (Array.isArray(t.items) ? t.items : String(t.text || "").split(/\n|;/)).map(x => str(x, 60)).filter(Boolean).slice(0, 6);
+    return (o.text || (o.items && o.items.length)) ? o : null;
+  }).filter(Boolean);
+}
 function sanitizeStyle(st) {
   st = st && typeof st === "object" ? st : {};
   const hex = v => /^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v) : undefined;
@@ -546,18 +651,21 @@ function sanitizeStyle(st) {
     cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
+    filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
+    split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
+    titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
-    licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(3, Math.round(Number(st.haut) || 0))),
+    licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(5, Math.round(Number(st.haut) || 0))),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 
 function sanitizeWords(words, max) {
   return (Array.isArray(words) ? words : []).slice(0, 3000).map(w => {
     const o = { w: String(w.w || "").slice(0, 60), s: Number(w.s) || 0, e: Number(w.e) || 0 };
-    if (w.cut) o.cut = true; if (w.emph) o.emph = true; if (w.zoom) o.zoom = true;
+    if (w.cut) o.cut = true; if (w.emph) o.emph = true; if (w.zoom) o.zoom = true; if (["ruck", "raus", "schwenk", "wackeln"].includes(w.zt)) o.zt = w.zt; if (["glitch", "blitz", "wisch", "unschaerfe"].includes(w.vfx)) o.vfx = w.vfx; if (w.hide) o.hide = true; if (w.pip && /^jobs\/[0-9a-f-]{36}\/pip-[a-z0-9]{8}\.(mp4|mov|webm)$/i.test(w.pip.key || "")) o.pip = { key: w.pip.key, pos: ["oben-rechts", "oben-links", "unten-rechts", "unten-links"].includes(w.pip.pos) ? w.pip.pos : "oben-rechts", size: w.pip.size === "mittel" ? "mittel" : "klein", dur: Math.max(1, Math.min(8, Number(w.pip.dur) || 3)) };
     if (["kling", "ping", "pop", "whoosh", "klick", "tada"].includes(w.sound)) o.sound = w.sound;
-    if (w.image && typeof w.image.key === "string" && w.image.key.startsWith("jobs/")) o.image = { key: w.image.key.slice(0, 200), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: ["oben", "mitte", "unten"].includes(w.image.pos) ? w.image.pos : "oben", size: ["klein", "mittel", "gross"].includes(w.image.size) ? w.image.size : "mittel" };
+    if (w.image && typeof w.image.key === "string" && w.image.key.startsWith("jobs/")) o.image = { key: w.image.key.slice(0, 200), dur: Math.min(4, Math.max(0.8, Number(w.image.dur) || 1.8)), pos: ["oben", "mitte", "unten"].includes(w.image.pos) ? w.image.pos : "oben", size: ["klein", "mittel", "gross"].includes(w.image.size) ? w.image.size : "mittel" }; if (o.image) { if (["foto", "screenshot", "logo", "meme"].includes(w.image.art)) o.image.art = w.image.art; if (w.image.text) o.image.text = String(w.image.text).slice(0, 40); }
     return o;
   }).filter(w => w.w && w.e >= w.s && (!max || w.s <= max + 1));
 }
@@ -610,7 +718,7 @@ async function routeRender(request, env, url) {
   }
   await patchJob(env, j.id, { status: "rendering", renders: j.renders + 1, error: null, cutout_credits: cutCredits });
   try {
-    await startContainer(env, url.origin, j, "render", { words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined });
+    await startContainer(env, url.origin, j, "render", { lang: s.acc.content_lang || "de", words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined });
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
     if (cutCredits) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cutCredits, p_action: "reel_cutout" } });
@@ -670,6 +778,13 @@ async function routeInternal(request, env, url) {
   const parts = url.pathname.split("/"); // ["", "internal", "reels", kind, id, name]
   const kind = parts[3], id = parts[4];
   if (!validId(id) || request.headers.get("x-internal") !== await hmac(env, "internal|" + id)) return new Response("", { status: 403 });
+  if (kind === "input" && request.method === "GET" && /^[2-6]$/.test(parts[5] || "")) return await serveObject(env, keyOf(id, "input" + parts[5]), request);
+  if (kind === "output" && request.method === "PUT" && parts[5] === "joined.mp4") { // zusammengefügte Clips ersetzen das Original
+    if (!(await env.REELS_BUCKET.head(keyOf(id, "input2")))) return new Response("", { status: 403 });
+    await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } });
+    for (let k = 2; k <= 6; k++) await env.REELS_BUCKET.delete(keyOf(id, "input" + k));
+    return new Response("ok");
+  }
   if (kind === "input" && request.method === "GET") {
     if (!(await env.REELS_BUCKET.head(keyOf(id, "input")))) { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); const src = r && r[0] && r[0].source_id; if (src && validId(src)) return await serveObject(env, keyOf(src, "input"), request); }
     return await serveObject(env, keyOf(id, "input"), request);
@@ -677,7 +792,7 @@ async function routeInternal(request, env, url) {
   if (kind === "output" && request.method === "PUT" && parts[5] === "input.mp4") { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); if (!(r && r[0] && r[0].source_id)) return new Response("", { status: 403 }); await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } }); return new Response("ok"); }
   if (kind === "asset" && request.method === "GET") {
     const key = url.searchParams.get("key") || "";
-    if (!key.startsWith("jobs/" + id + "/img-")) return new Response("", { status: 403 });
+    if (!key.startsWith("jobs/" + id + "/img-") && !key.startsWith("jobs/" + id + "/pip-")) return new Response("", { status: 403 });
     return await serveObject(env, key, request);
   }
   if (kind === "output" && request.method === "PUT") {

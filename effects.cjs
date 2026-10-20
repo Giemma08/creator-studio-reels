@@ -27,6 +27,8 @@ const EFFECTS = {
 };
 const CUTOUT = Object.keys(EFFECTS).filter(k => EFFECTS[k].cutout);
 
+// Vorher/Nachher in der Sprache des Reels (2.14)
+function VN(theme) { const l = String((theme && theme.locale) || "de").slice(0, 2); return ({ en: ["Before", "After"], fr: ["Avant", "Après"], it: ["Prima", "Dopo"], es: ["Antes", "Después"], pt: ["Antes", "Depois"], nl: ["Voor", "Na"], sv: ["Före", "Efter"], ca: ["Abans", "Després"] })[l] || ["Vorher", "Nachher"]; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 // Platz für den Effekt: über dem Kopf, wenn genug frei ist, sonst unter dem Kinn oberhalb der Untertitel
@@ -121,7 +123,7 @@ function compose(fx, d, place, theme) {
   } else if (fx.type === "vergleich") {
     css = ".vg{position:absolute;left:60px;right:60px;top:" + top + "px;display:grid;grid-template-columns:1fr 1fr;gap:18px}.vc{border-radius:28px;padding:28px 26px;box-shadow:0 22px 60px rgba(0,0,0,.22);opacity:0}" +
       ".v1{background:rgba(255,255,255,.92);color:#6b6f80}.v2{background:" + accent + ";color:#fff}.vh{font-weight:900;font-size:28px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px}.vx{font-weight:800;font-size:42px;line-height:1.15}";
-    body = "<div class='vg'><div class='vc v1' id='v1'><div class='vh'>✕ " + esc(fx.titel || "Vorher") + "</div><div class='vx'>" + esc(fx.vorher || "") + "</div></div><div class='vc v2' id='v2'><div class='vh'>✓ " + esc(fx.titel2 || "Nachher") + "</div><div class='vx'>" + esc(fx.nachher || "") + "</div></div></div>";
+    body = "<div class='vg'><div class='vc v1' id='v1'><div class='vh'>✕ " + esc(fx.titel || VN(theme)[0]) + "</div><div class='vx'>" + esc(fx.vorher || "") + "</div></div><div class='vc v2' id='v2'><div class='vh'>✓ " + esc(fx.titel2 || VN(theme)[1]) + "</div><div class='vx'>" + esc(fx.nachher || "") + "</div></div></div>";
     script = "tl.fromTo('#v1',{opacity:0,x:-40},{opacity:1,x:0,duration:.35,ease:'power3.out'},0.02);tl.fromTo('#v2',{opacity:0,x:40,scale:.95},{opacity:1,x:0,scale:1,duration:.4,ease:'back.out(1.8)'}," + Math.min(1.1, d / 3).toFixed(2) + ");tl.to('#v1,#v2',{opacity:0,duration:.25}," + (d - 0.3).toFixed(2) + ");";
   } else if (fx.type === "nachricht") {
     const msgs = (fx.nachrichten || []).slice(0, 3);
@@ -131,7 +133,7 @@ function compose(fx, d, place, theme) {
     script = msgs.map((m, i) => "tl.fromTo('#m" + i + "',{opacity:0,y:24,scale:.92},{opacity:1,y:0,scale:1,duration:.3,ease:'back.out(2)'}," + (0.05 + i * Math.max(0.6, (d - 1) / Math.max(1, msgs.length))).toFixed(2) + ");").join("") +
       "tl.to('.m',{opacity:0,duration:.25}," + (d - 0.3).toFixed(2) + ");";
   } else if (fx.type === "emoji") {
-    css = ".em{position:absolute;left:0;right:0;top:" + top + "px;text-align:center;font-size:230px;line-height:1;opacity:0;font-family:'Noto Color Emoji',sans-serif}";
+    css = ".em{position:absolute;left:0;right:0;top:" + top + "px;text-align:center;font-size:" + (Number(fx.esize) || 230) + "px;line-height:1;opacity:0;font-family:'Noto Color Emoji',sans-serif}";
     body = "<div class='em' id='em'>" + esc(fx.emoji || "✨") + "</div>";
     script = "tl.fromTo('#em',{opacity:0,scale:.3,rotation:-25},{opacity:1,scale:1,rotation:0,duration:.35,ease:'back.out(3)'},0.02);tl.to('#em',{rotation:8,duration:.18,yoyo:true,repeat:1},0.4);tl.to('#em',{opacity:0,scale:.6,duration:.22}," + (d - 0.25).toFixed(2) + ");";
   }
@@ -182,8 +184,8 @@ function neededHeight(fx) {
   if (fx.type === "diagramm") return 380;
   if (fx.type === "vergleich") return 110 + 52 * Math.ceil(Math.max(String(fx.vorher || "").length, String(fx.nachher || "").length) / 14);
   if (fx.type === "nachricht") return 30 + 120 * Math.min(3, (fx.nachrichten || []).length);
-  if (fx.type === "emoji") return 240;
-  if (fx.type === "gif") return Math.round(620 * (Number(fx.h) || 270) / (Number(fx.w) || 480)) + 16;
+  if (fx.type === "emoji") return (Number(fx.esize) || 230) + 10;
+  if (fx.type === "gif") return Math.round((Number(fx.gw) || 620) * (Number(fx.h) || 270) / (Number(fx.w) || 480)) + (fx.art === "sticker" ? 0 : 16);
   return 180;
 }
 
@@ -192,7 +194,7 @@ function planEffects(effects, words, map, layout) {
   const out = [];
   let lastEnd = -1;
   for (const fx of (effects || []).slice(0, 4)) { // bis zu 4 Effekte, wie im Editor (2.13.2)
-    if (!EFFECTS[fx.type] || fx.off || (fx.type === "gif" && !fx.mp4)) continue;
+    if (!EFFECTS[fx.type] || fx.off || (fx.type === "gif" && !fx.mp4 && !fx.src)) continue;
     const startW = words[fx.von] || words[fx.wort];
     if (!startW || startW.cut) continue;
     const endW = words[fx.bis] || startW;
@@ -205,7 +207,8 @@ function planEffects(effects, words, map, layout) {
       if (t0 > map(endW.e) + 0.3) continue;
     }
     if (t1 - t0 < 1.2) continue;
-    const place = placement(layout, neededHeight(fx));
+    // Selbst gewählte Höhe (Prozent von oben) hat Vorrang vor der automatischen Platzierung (2.13.4)
+    const place = fx.gy != null && isFinite(Number(fx.gy)) ? { top: Math.round(Number(fx.gy) / 100 * 1920), zone: "manual", hideCaptions: false } : placement(layout, neededHeight(fx));
     const copy = Object.assign({}, fx);
     if (fx.type === "checkliste") copy.punkte = (fx.punkte || []).map(p => ({ text: p.text, at: words[p.wort] && !words[p.wort].cut ? map(words[p.wort].s) - t0 : null }));
     if (fx.type === "lichtaus" && words[fx.bis] && !words[fx.bis].cut) copy.at = map(words[fx.bis].s) - t0;
