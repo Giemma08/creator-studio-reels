@@ -33,7 +33,7 @@ export default {
     try {
       const p = url.pathname, m = request.method;
       if (p === "/tools/reels" || p === "/tools/reels/") {
-        const html = UI.replace("__SUPABASE_URL__", env.SUPABASE_URL || "").replace("__SUPABASE_ANON_KEY__", env.SUPABASE_ANON_KEY || "");
+        const html = UI.split("__SUPABASE_URL__").join(env.SUPABASE_URL || "").split("__SUPABASE_ANON_KEY__").join(env.SUPABASE_ANON_KEY || ""); // 2.19.2: alle Stellen ersetzen, nicht nur die erste
         return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (p.startsWith("/tools/reels/sound/")) {
