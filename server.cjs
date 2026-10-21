@@ -117,7 +117,9 @@ async function analyze(job) {
   const info = await probe(input);
   if (info.duration > (job.max_seconds || 185)) throw new Error("too_long");
   let words = [];
-  if (info.hasAudio) {
+  const given = job.clip && info.hasAudio ? clipWords(job.clip) : null; // 1.1: Wörter aus dem langen Video wiederverwenden
+  if (given) words = given;
+  else if (info.hasAudio) {
     const audio = path.join(dir, "audio.mp3");
     await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", audio]);
     const fd = new FormData();
@@ -134,6 +136,7 @@ async function analyze(job) {
     // Satzzeichen aus dem Volltext übernehmen (Wort-Zeitmarken haben oft keine)
     if (tr.text) attachPunctuation(words, tr.text);
   }
+  if (job.retakes && words.length) { try { const n = markRetakes(words); if (n) console.log("Wiederholungen entfernt:", n); } catch (e) { console.log("Wiederholungen", e.message); } }
   const plan = words.length ? await aiPlan(job, words) : { hook_titel: "", schnitte: [], betont: [], zooms: [], toene: [], bild_ideen: [] };
   // Plan auf die Wörter anwenden
   (plan.schnitte || []).forEach(r => { const a = Math.max(0, r[0] | 0), b = Math.min(words.length - 1, r[1] | 0); for (let i = a; i <= b; i++) words[i].cut = true; });
@@ -209,9 +212,13 @@ function faceCheck(layout, segs, map, style) {
 }
 
 const LOCALES = { de: "de-DE", en: "en-US", fr: "fr-FR", it: "it-IT", es: "es-ES", pt: "pt-PT", nl: "nl-NL", sv: "sv-SE", ca: "ca-ES" };
-async function render(job) {
+// Clip-Editor 1.2: Entwurf aus einem langen Video wird erst beim Erstellen ausgeschnitten, die Wortzeiten gehen mit zurück
+async function render(job) { const r = await renderCore(job); if (job.__moved) r.words_new = job.__moved; return r; }
+async function renderCore(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
-  const input = await getInput(job, dir);
+  let input;
+  if (job.draft && job.clip) { input = await cutClip(job, dir); job.words = job.__moved = shiftWords(job.words || [], job.clip); }
+  else input = await getInput(job, dir);
   const info = await probe(input);
   const words = (job.words || []).map(w => Object.assign({}, w));
   let segs = R.keptSegments(words, info.duration, (job.style || {}).pausen);
@@ -403,30 +410,32 @@ async function clipScan(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
   const input = await getInput(job, dir);
   const info = await probe(input);
-  if (info.duration > (job.max_seconds || 3 * 3600)) throw new Error("too_long");
+  const r0 = job.range && Number(job.range.to) > Number(job.range.from) ? { a: Math.max(0, Number(job.range.from) || 0), b: Math.min(info.duration, Number(job.range.to)) } : { a: 0, b: info.duration }; // 1.2: Zeitraum
+  if (r0.b - r0.a > (job.max_seconds || 3 * 3600)) throw new Error("too_long");
   if (!info.hasAudio) throw new Error("Das Video enthält keine Tonspur.");
-  const CH = 600, n = Math.max(1, Math.ceil(info.duration / CH)), words = [];
+  const CH = 600, n = Math.max(1, Math.ceil((r0.b - r0.a) / CH)), words = [];
   for (let i = 0; i < n; i++) {
     const f = path.join(dir, "c" + i + ".mp3");
-    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(i * CH), "-t", String(CH), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", f]);
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(r0.a + i * CH), "-t", String(Math.min(CH, r0.b - r0.a - i * CH)), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", f]);
     let tr = null, tries = 0, last = "";
     while (!tr && tries++ < 3) {
       const fd = new FormData();
       fd.append("file", new Blob([fs.readFileSync(f)], { type: "audio/mpeg" }), "c" + i + ".mp3");
       fd.append("model", "whisper-1"); fd.append("response_format", "verbose_json"); fd.append("timestamp_granularities[]", "word");
+      if (job.vocab) fd.append("prompt", String(job.vocab).slice(0, 800));
       if (job.lang) fd.append("language", job.lang);
       const res = await fetch(OPENAI + "/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + job.openai_key }, body: fd });
       if (res.ok) tr = await res.json(); else { last = res.status + " " + (await res.text()).slice(0, 200); await new Promise(r => setTimeout(r, 2000 * tries)); }
     }
     if (!tr) throw new Error("transcribe " + last);
-    const ws = (tr.words || []).map(w => ({ w: String(w.word).trim(), s: Number(w.start) + i * CH, e: Number(w.end) + i * CH })).filter(w => w.w);
+    const ws = (tr.words || []).map(w => ({ w: String(w.word).trim(), s: Number(w.start) + r0.a + i * CH, e: Number(w.end) + r0.a + i * CH })).filter(w => w.w);
     if (tr.text) attachPunctuation(ws, tr.text);
     ws.forEach(w => words.push(w));
   }
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
   const sentences = toSentences(words);
   const clips = sentences.length >= 3 ? await aiClips(job, sentences) : [];
-  return { status: "clips_ready", duration: info.duration, sentences: sentences.map(x => ({ t: x.t, s: +x.s.toFixed(2), e: +x.e.toFixed(2) })), clips };
+  return { status: "clips_ready", processed: r0.b - r0.a, duration: info.duration, sentences: sentences.map(x => ({ t: x.t, s: +x.s.toFixed(2), e: +x.e.toFixed(2) })), clips, words: words.slice(0, 40000).map(w => [w.w.slice(0, 40), +w.s.toFixed(2), +w.e.toFixed(2)]) }; // 1.0: Wortzeiten für den Clip-Editor
 }
 function toSentences(words) {
   const out = []; let cur = [];
@@ -446,8 +455,8 @@ async function aiClips(job, sentences) {
   const instructions = "Du bist eine erfahrene Social-Media-Cutterin. Du bekommst das Transkript eines langen Videos (Masterclass, Live, Webinar oder Gespräch) Satz für Satz, mit Nummer und Zeitmarke. " +
     "Finde die 5 bis 10 stärksten Stellen, die jeweils FÜR SICH ALLEIN als Instagram-Reel funktionieren. Eine gute Stelle: beginnt mit einem Satz, der sofort neugierig macht oder eine klare Aussage trifft (ohne Vorwissen verständlich), entwickelt EINEN Gedanken (eine Erkenntnis, eine kurze Geschichte, eine klare Meinung, eine Liste oder einen Fehler mit Lösung) und endet an einem natürlichen Schlusspunkt (Pointe, Erkenntnis, Fazit). " +
     "Länge jeweils 20 bis 90 Sekunden, höchstens 120. Keine Stellen, die mitten im Gedanken anfangen oder auf Folien, Bildschirm oder frühere Teile verweisen ('wie ich vorhin sagte', 'auf dieser Folie'). Keine Begrüßung, keine Technik-Probleme, keine Organisationsdinge. Stellen dürfen sich nicht überschneiden. " +
-    "Antworte NUR mit JSON: {\"clips\":[{\"von\":0,\"bis\":0,\"titel\":\"Titel für das Reel, höchstens 8 Wörter\",\"hook\":\"der erste Satz der Stelle\",\"warum\":\"1 Satz in einfacher Sprache, warum diese Stelle als Reel funktioniert\",\"typ\":\"wissen|persoenlich|autoritaet|verkauf|leadmagnet\",\"punkte\":8}]} " +
-    "von und bis sind Satznummern (inklusive). punkte: 1 bis 10, wie stark die Stelle als Reel ist. Schreibe Titel, Hook und Begründung in der Sprache des Transkripts.";
+    "Antworte NUR mit JSON: {\"clips\":[{\"von\":0,\"bis\":0,\"titel\":\"Titel für das Reel, höchstens 8 Wörter\",\"hook\":\"der erste Satz der Stelle\",\"warum\":\"1 Satz in einfacher Sprache, warum diese Stelle als Reel funktioniert\",\"typ\":\"wissen|persoenlich|autoritaet|verkauf|leadmagnet\",\"punkte\":8,\"staerke\":80}]} " +
+    "von und bis sind Satznummern (inklusive). punkte: 1 bis 10. staerke: 0 bis 100, wie stark der Einstieg in den ersten 3 Sekunden zum Weiterschauen bringt (Hook-Stärke), streng bewerten. Schreibe Titel, Hook und Begründung in der Sprache des Transkripts." + (job.befehl ? " WUNSCH DER NUTZERIN (hat Vorrang vor Anzahl und Länge oben, Zeitangaben beziehen sich auf die Zeitmarken): " + String(job.befehl).slice(0, 600) : "");
   const res = await fetch(OPENAI + "/v1/responses", { method: "POST", headers: { Authorization: "Bearer " + job.openai_key, "Content-Type": "application/json" },
     body: JSON.stringify({ model: job.model, instructions, input: [{ role: "user", content: list }], max_output_tokens: 3500 }) });
   if (!res.ok) { console.log("Clip-Auswahl Fehler", res.status, (await res.text()).slice(0, 300)); return []; }
@@ -458,33 +467,180 @@ async function aiClips(job, sentences) {
   const N = sentences.length, used = [];
   const items = (Array.isArray(d.clips) ? d.clips : []).map(c => {
     let a = Math.max(0, Math.min(N - 1, c.von | 0)), b = Math.max(0, Math.min(N - 1, c.bis | 0)); if (b < a) [a, b] = [b, a];
-    return { von: a, bis: b, start: +Math.max(0, sentences[a].s - 0.15).toFixed(2), end: +(sentences[b].e + 0.25).toFixed(2), titel: String(c.titel || "").slice(0, 100), hook: String(c.hook || sentences[a].t).slice(0, 300), warum: String(c.warum || "").slice(0, 300), typ: String(c.typ || "wissen").slice(0, 20), punkte: Math.max(1, Math.min(10, Number(c.punkte) || 5)) };
-  }).filter(c => c.end - c.start >= 15 && c.end - c.start <= 150).sort((x, y) => y.punkte - x.punkte)
+    return { von: a, bis: b, start: +Math.max(0, sentences[a].s - 0.15).toFixed(2), end: +(sentences[b].e + 0.25).toFixed(2), titel: String(c.titel || "").slice(0, 100), hook: String(c.hook || sentences[a].t).slice(0, 300), warum: String(c.warum || "").slice(0, 300), typ: String(c.typ || "wissen").slice(0, 20), punkte: Math.max(1, Math.min(10, Number(c.punkte) || 5)), score: Math.max(0, Math.min(100, Math.round(Number(c.staerke) || (Number(c.punkte) || 5) * 10))) };
+  }).filter(c => c.end - c.start >= 8 && c.end - c.start <= 180).sort((x, y) => y.score - x.score)
     .filter(c => { if (used.some(u => c.von <= u.bis && c.bis >= u.von)) return false; used.push(c); return true; });
-  return items.slice(0, 10).sort((x, y) => x.start - y.start);
+  return items.slice(0, 15).sort((x, y) => x.start - y.start);
 }
 // Ausgewählte Stelle direkt aus dem Original schneiden (ohne das ganze Video zu laden) und ins Hochformat um das Gesicht bringen
 async function cutClip(job, dir) {
-  const url = job.base + "/internal/reels/input/" + job.id, H = "x-internal: " + job.token + "\r\n";
-  const s0 = Math.max(0, Number(job.clip.start) || 0), dur = Math.max(5, Math.min(185, (Number(job.clip.end) || 0) - s0));
-  const pj = JSON.parse(await run("ffprobe", ["-v", "error", "-headers", H, "-select_streams", "v:0", "-show_entries", "stream=width,height:stream_tags=rotate", "-of", "json", url]));
-  const st = (pj.streams || [])[0] || {}; let w = Number(st.width) || 1920, h = Number(st.height) || 1080;
-  if (st.tags && /^-?90$|^-?270$/.test(String(st.tags.rotate || ""))) [w, h] = [h, w];
-  let vf = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920";
+  // Clip-Editor 1.1: ein oder mehrere Teile (Hook von später nach vorne), Rohschnitt in Originalgröße, dann Ausschnitt
+  const url = job.base + "/internal/reels/input/" + (job.src_id || job.id), H = "x-internal: " + (job.src_token || job.token) + "\r\n";
+  const parts = clipParts(job.clip), raws = [];
+  for (let k = 0; k < parts.length; k++) {
+    const f = path.join(dir, "raw" + k + ".mp4");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", H, "-ss", parts[k].s.toFixed(2), "-i", url, "-t", parts[k].d.toFixed(2), "-r", "30", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", f]);
+    raws.push(f);
+  }
+  let raw = raws[0];
+  if (raws.length > 1) { const list = path.join(dir, "raw.txt"); fs.writeFileSync(list, raws.map(f => "file '" + f + "'").join("\n")); raw = path.join(dir, "raw.mp4"); await run("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", raw]); }
+  const pj = JSON.parse(await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", raw]));
+  const st = (pj.streams || [])[0] || {}, w = Number(st.width) || 1920, h = Number(st.height) || 1080;
+  let args = ["-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"];
   if (w / h > 0.6) {
-    // Gesicht in einigen Bildern suchen und den Ausschnitt danach ausrichten
-    const frames = [];
-    for (let k = 0; k < 6; k++) { const f = path.join(dir, "f" + k + ".jpg"); try { await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", H, "-ss", String(s0 + dur * (k + 0.5) / 6), "-i", url, "-frames:v", "1", "-vf", "scale=960:-2", f]); frames.push(f); } catch (e) {} }
-    let cx = 0.5;
-    try { const out = await run("python3", ["-c", FACE_PY].concat(frames)); const v = parseFloat(String(out).trim()); if (v >= 0 && v <= 1) cx = v; } catch (e) { console.log("Gesichtssuche", e.message.slice(0, 200)); }
-    const cw = Math.min(w, Math.round(h * 9 / 16 / 2) * 2), x = Math.round(Math.max(0, Math.min(w - cw, cx * w - cw / 2)));
-    vf = "crop=" + cw + ":" + h + ":" + x + ":0,scale=1080:1920,setsar=1";
+    // Gesichter und aktive Sprecherin finden (Mundbewegung), danach den Ausschnitt führen
+    let sp = null;
+    try { const proxy = path.join(dir, "proxy.mp4"); await run("ffmpeg", ["-y", "-loglevel", "error", "-i", raw, "-vf", "fps=10,scale=480:-2", "-an", proxy]);
+      sp = JSON.parse(String(await run("python3", ["-c", SPEAKER_PY, proxy, path.join(__dirname, "models", "yunet.onnx")])).trim()); }
+    catch (e) { console.log("Sprechererkennung", String(e.message).slice(0, 200)); }
+    args = speakerCrop(sp, w, h, job.clip.layout);
   }
   const out = path.join(dir, "input");
-  await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", H, "-ss", s0.toFixed(2), "-i", url, "-t", dur.toFixed(2), "-vf", vf, "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-f", "mp4", out]);
+  await run("ffmpeg", ["-y", "-loglevel", "error", "-i", raw].concat(args, ["-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-f", "mp4", out]));
   await upload(job.base + "/internal/reels/output/" + job.id + "/input.mp4", hdr(job), out, "video/mp4");
   return out;
 }
+function shiftWords(words, c) {
+  const P = clipParts(c), out = [];
+  words.forEach(w => { let off = 0; for (const p of P) { if (Number(w.s) >= p.s - 0.06 && Number(w.s) <= p.s + p.d + 0.06) { const o = Object.assign({}, w); o.s = Math.max(0, +(Number(w.s) - p.s + off).toFixed(2)); o.e = +Math.max(o.s + 0.05, Math.min(Number(w.e), p.s + p.d) - p.s + off).toFixed(2); out.push(o); return; } off += p.d; } });
+  return out;
+}
+// Entwurf: nur Schnittvorschläge und Vorschaubild, ohne das Video zu schneiden
+async function planDraft(job) {
+  const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
+  const words = (job.words || []).map(w => ({ w: String(w.w), s: Number(w.s), e: Number(w.e) })).filter(w => w.w);
+  if (job.retakes && words.length) { try { markRetakes(words); } catch (e) {} }
+  const plan = words.length ? await aiPlan(job, words) : { hook_titel: "", schnitte: [], betont: [], zooms: [], toene: [], bild_ideen: [] };
+  (plan.schnitte || []).forEach(r => { const a = Math.max(0, r[0] | 0), b = Math.min(words.length - 1, r[1] | 0); for (let i = a; i <= b; i++) words[i].cut = true; });
+  (plan.betont || []).forEach(i => { if (words[i]) words[i].emph = true; });
+  (plan.zooms || []).slice(0, 5).forEach(i => { if (words[i]) words[i].zoom = true; });
+  (plan.toene || []).slice(0, 5).forEach(x => { if (words[x.i] && R.SOUNDS.includes(x.ton)) words[x.i].sound = x.ton; });
+  if (!words.some(w => !w.cut)) words.forEach(w => { delete w.cut; });
+  try { const first = words.find(w => !w.cut) || words[0], thumb = path.join(dir, "thumb.jpg");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", "x-internal: " + job.src_token + "\r\n", "-ss", String(Math.max(0, (first ? first.s : 0) + 0.4)), "-i", job.base + "/internal/reels/input/" + job.src_id, "-frames:v", "1", "-vf", "scale=-2:640,crop='min(iw,ih*9/16)':ih", thumb]);
+    await upload(job.base + "/internal/reels/output/" + job.id + "/thumb.jpg", hdr(job), thumb, "image/jpeg"); } catch (e) { console.log("Vorschaubild", String(e.message).slice(0, 200)); }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+  const total = clipParts(job.clip).reduce((a, p) => a + p.d, 0);
+  return { phase: "analyze", draft: true, status: "ready", duration: total, has_audio: true, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [], effekte: job.broll !== false && Array.isArray(plan.effekte) ? plan.effekte.slice(0, 3) : [] };
+}
+function clipParts(c) {
+  const list = Array.isArray(c.teile) && c.teile.length ? c.teile : [{ start: c.start, end: c.end }];
+  let total = 0; const out = [];
+  list.slice(0, 4).forEach(p => { const s = Math.max(0, Number(p.start) || 0), d = Math.min(185 - total, (Number(p.end) || 0) - s); if (d >= 0.5) { out.push({ s, d }); total += d; } });
+  if (!out.length) out.push({ s: Math.max(0, Number(c.start) || 0), d: Math.max(5, Math.min(185, (Number(c.end) || 0) - (Number(c.start) || 0))) });
+  return out;
+}
+// Wortzeiten aus dem langen Video auf den Clip umrechnen (spart die zweite Abschrift)
+function clipWords(c) {
+  const W = Array.isArray(c.words) ? c.words : []; if (!W.length) return null;
+  const out = []; let off = 0;
+  clipParts(c).forEach(p => { W.forEach(x => { const s = Number(x[1]), e = Number(x[2]); if (s >= p.s - 0.05 && e <= p.s + p.d + 0.05) out.push({ w: String(x[0]), s: Math.max(0, +(s - p.s + off).toFixed(2)), e: +(Math.min(e, p.s + p.d) - p.s + off).toFixed(2) }); }); off += p.d; });
+  return out.length >= 3 ? out : null;
+}
+function speakerCrop(sp, w, h, layout) {
+  const even = v => Math.max(2, Math.round(v / 2) * 2), P = sp && Array.isArray(sp.persons) ? sp.persons : [];
+  const cw = even(Math.min(w, h * 9 / 16)), cx = x => Math.round(Math.max(0, Math.min(w - cw, x * w - cw / 2)));
+  if (layout === "geteilt" && P.length >= 2) {
+    const two = P.slice().sort((a, b) => b.n - a.n).slice(0, 2).sort((a, b) => a.x - b.x);
+    const tile = p => { const ch = even(Math.min(h, w * 8 / 9 / 1.0, Math.max(h * 0.42, p.s * h * 3.4))), tw = even(Math.min(w, ch * 9 / 8));
+      const x = Math.round(Math.max(0, Math.min(w - tw, p.x * w - tw / 2))), y = Math.round(Math.max(0, Math.min(h - ch, p.y * h - ch * 0.42))); return "crop=" + tw + ":" + ch + ":" + x + ":" + y + ",scale=1080:960,setsar=1"; };
+    return ["-filter_complex", "[0:v]split=2[a][b];[a]" + tile(two[0]) + "[t];[b]" + tile(two[1]) + "[u];[t][u]vstack[v]", "-map", "[v]", "-map", "0:a?"];
+  }
+  let xexpr = String(cx(P.length ? P.slice().sort((a, b) => b.n - a.n)[0].x : 0.5));
+  const shots = sp && Array.isArray(sp.shots) ? sp.shots.filter(s => P[s.p]) : [];
+  if (P.length >= 2 && shots.length > 1) { xexpr = String(cx(P[shots[shots.length - 1].p].x)); for (let i = shots.length - 2; i >= 0; i--) xexpr = "if(lt(t\\," + shots[i + 1].t.toFixed(2) + ")\\," + cx(P[shots[i].p].x) + "\\," + xexpr + ")"; }
+  return ["-vf", "crop=" + cw + ":" + h + ":" + xexpr + ":0,scale=1080:1920,setsar=1"];
+}
+// Wiederholungen entfernen: gestotterte Wörter, neu angefangene Satzteile und doppelt gesprochene Sätze (die spätere Fassung bleibt)
+function normW(w) { return String(w || "").toLocaleLowerCase("de-DE").replace(/[^\p{L}\p{N}]+/gu, ""); }
+function markRetakes(w) {
+  const kept = []; w.forEach((x, i) => { if (!x.cut) kept.push(i); }); const cut = {};
+  for (let a = 0; a < kept.length; a++) {
+    const i = kept[a]; if (cut[i]) continue;
+    if (a + 1 < kept.length && normW(w[i].w) && normW(w[i].w) === normW(w[kept[a + 1]].w) && w[kept[a + 1]].s - w[i].e < 0.6) { cut[i] = 1; continue; }
+    for (let L = 4; L >= 2; L--) { if (a + L >= kept.length) continue; const seq = kept.slice(a, a + L).map(k => normW(w[k].w)); if (seq.some(x => !x)) continue;
+      let done = false;
+      for (let b = a + L; b <= Math.min(kept.length - L, a + L + 8); b++) { let ok = true; for (let q = 0; q < L; q++) if (normW(w[kept[b + q]].w) !== seq[q]) { ok = false; break; }
+        if (ok) { const between = kept.slice(a, b); if (between.some(k => /[.!?]$/.test(String(w[k].w)))) break; between.forEach(k => { cut[k] = 1; }); a = b - 1; done = true; break; } }
+      if (done) break; }
+  }
+  // ganze Sätze: beginnt der nächste Satz (innerhalb von 15 Sek.) mit denselben 3 Wörtern, war der erste ein Versuch
+  const S = []; let curS = [];
+  kept.forEach(k => { if (cut[k]) return; curS.push(k); if (/[.!?…]$/.test(String(w[k].w))) { S.push(curS); curS = []; } }); if (curS.length) S.push(curS);
+  for (let i = 0; i + 1 < S.length; i++) { const A = S[i], B = S[i + 1]; if (A.length < 3 || B.length < 3) continue;
+    const same = [0, 1, 2].every(q => normW(w[A[q]].w) && normW(w[A[q]].w) === normW(w[B[q]].w));
+    if (same && w[B[0]].s - w[A[A.length - 1]].e < 15) A.forEach(k => { cut[k] = 1; }); }
+  let n = 0; Object.keys(cut).forEach(k => { if (w[k] && !w[k].cut) { w[k].cut = true; n++; } }); return n;
+}
+const SPEAKER_PY = [
+  "import sys, json, cv2, numpy as np",
+  "cap = cv2.VideoCapture(sys.argv[1]); fps = cap.get(cv2.CAP_PROP_FPS) or 10; win = max(1, int(round(fps * 1.5)))",
+  "yn = None",
+  "try:",
+  "    yn = cv2.FaceDetectorYN.create(sys.argv[2], '', (320, 320), 0.6, 0.3, 50)",
+  "except Exception:",
+  "    yn = None",
+  "hc = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')",
+  "def detect(im, g):",
+  "    H, W = g.shape",
+  "    if yn is not None:",
+  "        yn.setInputSize((W, H)); _, f = yn.detect(im)",
+  "        if f is not None: return [(int(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in f]",
+  "        return []",
+  "    return [tuple(int(v) for v in r) for r in hc.detectMultiScale(cv2.equalizeHist(g), 1.08, 5, minSize=(18, 18))]",
+  "allf, mot, cur, prev, i, W, H = [], {}, [], None, 0, 1, 1",
+  "while True:",
+  "    ok, im = cap.read()",
+  "    if not ok: break",
+  "    g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY); H, W = g.shape",
+  "    if i % 5 == 0:",
+  "        cur = [f for f in detect(im, g) if f[2] > 8 and f[3] > 8]",
+  "        for (x, y, w, h) in cur: allf.append(((x + w / 2) / W, (y + h / 2) / H, h / H))",
+  "    if prev is not None:",
+  "        for (x, y, w, h) in cur:",
+  "            y0, y1, x0, x1 = max(0, y + int(.62 * h)), min(H, y + int(.98 * h)), max(0, x + int(.22 * w)), min(W, x + int(.78 * w))",
+  "            if y1 > y0 and x1 > x0: mot.setdefault(i // win, []).append(((x + w / 2) / W, float(np.mean(cv2.absdiff(g[y0:y1, x0:x1], prev[y0:y1, x0:x1])))))",
+  "    prev = g; i += 1",
+  "xs = sorted(allf, key=lambda f: f[0]); groups, grp = [], []",
+  "for f in xs:",
+  "    if grp and f[0] - grp[-1][0] > 0.12: groups.append(grp); grp = []",
+  "    grp.append(f)",
+  "if grp: groups.append(grp)",
+  "need = max(3, int(0.08 * len(allf)))",
+  "persons = [{'x': float(np.median([f[0] for f in g])), 'y': float(np.median([f[1] for f in g])), 's': float(np.median([f[2] for f in g])), 'n': len(g)} for g in groups if len(g) >= need][:4]",
+  "shots = []",
+  "if len(persons) >= 2:",
+  "    nwin = i // win + 1; who = []",
+  "    for k in range(nwin):",
+  "        sc = [[] for _ in persons]",
+  "        for (cx, m) in mot.get(k, []):",
+  "            d = [abs(cx - p['x']) for p in persons]; j = int(np.argmin(d))",
+  "            if d[j] < 0.12: sc[j].append(m)",
+  "        v = [float(np.mean(s)) if s else 0.0 for s in sc]; o = sorted(range(len(v)), key=lambda q: -v[q])",
+  "        who.append(o[0] if v[o[0]] > 0.8 and v[o[0]] > 1.15 * v[o[1]] else None)",
+  "    last = next((q for q in who if q is not None), 0)",
+  "    for k in range(nwin):",
+  "        if who[k] is None: who[k] = last",
+  "        last = who[k]",
+  "    runs = []",
+  "    for k, p in enumerate(who):",
+  "        if runs and runs[-1][0] == p: runs[-1][2] = k + 1",
+  "        else: runs.append([p, k, k + 1])",
+  "    ch = True",
+  "    while ch and len(runs) > 1:",
+  "        ch = False",
+  "        for r in range(len(runs)):",
+  "            if runs[r][2] - runs[r][1] < 2:",
+  "                t = r - 1 if r > 0 else r + 1",
+  "                runs[t][1] = min(runs[t][1], runs[r][1]); runs[t][2] = max(runs[t][2], runs[r][2]); runs.pop(r); ch = True; break",
+  "        m = []",
+  "        for r in runs:",
+  "            if m and m[-1][0] == r[0]: m[-1][2] = r[2]",
+  "            else: m.append(r)",
+  "        runs = m",
+  "    shots = [{'t': round(r[1] * win / fps, 2), 'p': int(r[0])} for r in runs]",
+  "print(json.dumps({'w': W, 'h': H, 'persons': persons, 'shots': shots}))"
+].join("\n");
 const FACE_PY = [
   "import sys, cv2",
   "c = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')",
@@ -508,14 +664,14 @@ const FACE_PY = [
 // ---------- HTTP ----------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") { res.end("ok"); return; }
-  if (req.method !== "POST" || !["/analyze", "/render", "/transcribe", "/clips"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
+  if (req.method !== "POST" || !["/analyze", "/render", "/transcribe", "/clips", "/plan"].includes(req.url)) { res.statusCode = 404; res.end(); return; }
   let body = "";
   req.on("data", d => { body += d; if (body.length > 5e6) req.destroy(); });
   req.on("end", () => {
     let job; try { job = JSON.parse(body); } catch { res.statusCode = 400; res.end(); return; }
     if (!job.id || !/^[0-9a-f-]{36}$/.test(job.id) || !job.base || !job.token) { res.statusCode = 400; res.end(); return; }
     res.statusCode = 202; res.end(JSON.stringify({ accepted: true }));
-    const fn = req.url === "/analyze" ? analyze : req.url === "/transcribe" ? transcribe : req.url === "/clips" ? clipScan : render;
+    const fn = req.url === "/analyze" ? analyze : req.url === "/transcribe" ? transcribe : req.url === "/clips" ? clipScan : req.url === "/plan" ? planDraft : render;
     const t0 = Date.now();
     fn(job).then(r => callback(job, Object.assign({ phase: req.url.slice(1), seconds: (Date.now() - t0) / 1000, usage: job.usage || null }, r)))
       .catch(e => { console.log("Fehler", e.stack || e); callback(job, { phase: req.url.slice(1), status: "error", error: String(e.message || e).slice(0, 300) }); });

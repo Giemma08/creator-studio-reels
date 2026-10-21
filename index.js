@@ -49,6 +49,9 @@ export default {
       if (p === "/api/reels" && m === "DELETE") return await routeDelete(request, env, url);
         if (p === "/api/reels/start" && m === "POST") return await routeStart(request, env);
       if (p === "/api/reels/clips/make" && m === "POST") return await routeClipsMake(request, env, url);
+      if (p === "/api/reels/clips/save" && m === "POST") return await routeClipsSave(request, env);
+      if (p === "/api/reels/clips/ask" && m === "POST") return await routeClipsAsk(request, env);
+      if (p === "/api/reels/clips/captions" && m === "POST") return await routeClipsCaptions(request, env);
       if (p === "/api/reels/part" && m === "PUT") return await routePart(request, env, url);
       if (p === "/api/reels/complete" && m === "POST") return await routeComplete(request, env, url);
       if (p === "/api/reels/save" && m === "POST") return await routeSave(request, env);
@@ -218,11 +221,13 @@ async function publicJob(env, origin, j, full) {
   out.thumb = j.status !== "uploading" && j.status !== "analyzing" && j.status !== "error" ? await mediaUrl(env, origin, j.id, j.status === "done" ? "final.jpg" : "thumb.jpg") : "";
   if (full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
-    out.input = await mediaUrl(env, origin, j.id, "input");
+    const dsrc = j.clips && j.clips.draft && j.clips.source_id; out.draft = !!dsrc;
+    out.input = await mediaUrl(env, origin, dsrc ? j.clips.source_id : j.id, "input");
     if (j.status === "done") { out.final = await mediaUrl(env, origin, j.id, "final.mp4"); out.check = await mediaUrl(env, origin, j.id, "check.jpg"); out.report = Array.isArray(j.report) ? j.report : []; }
     const imgs = {};
     for (const w of (j.words || [])) if (w && w.image && w.image.key && !imgs[w.image.key]) imgs[w.image.key] = await mediaUrl(env, origin, j.id, w.image.key.split("/").pop());
     out.images = imgs;
+    const cv = j.style && j.style.cover && j.style.cover.key; if (cv) out.cover = await mediaUrl(env, origin, j.id, String(cv).split("/").pop()); // 2.24: Cover für das Posten
   }
   return out;
 }
@@ -249,7 +254,7 @@ async function routeStart(request, env) {
     if (Number(b.size) > lim.bytes) return json({ error: "file_size_plan", limit_gb: lim.bytes / 1073741824, plan: lim.plan }, 403);
   } else if (Number(b.size) > 1.5 * 1024 * 1024 * 1024) return json({ error: "file_size" }, 400);
   const cost = await db(env, "action_costs?action=eq." + (isClips ? "clips_min" : isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
-  const per = cost && cost[0] ? Number(cost[0].credits) : (isLong ? 1 : 30);
+  const per = cost && cost[0] ? Number(cost[0].credits) : (isClips ? 2 : isLong ? 1 : 30);
   const need = isLong ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
   const st = creditStatus(s.acc);
   if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
@@ -294,22 +299,101 @@ async function routeClipsMake(request, env, url) {
   const src = await getJob(env, s, b.id);
   if (!src || src.kind !== "clips" || src.status !== "clips_ready") return json({ error: "not_found" }, 404);
   const dur = Number(src.duration) || 0;
-  const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 10).map(p => ({ start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120) })).filter(p => p.end - p.start >= 5 && p.end - p.start <= 180);
+  const span = v => v && typeof v === "object" && Number(v.end) - Number(v.start) >= 0.5 ? { start: Math.max(0, Number(v.start) || 0), end: Math.min(dur || 1e9, Number(v.end) || 0) } : null;
+  const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 15).map(p => { const v = span(p.vorne); return { key: String(p.key || "").slice(0, 40), start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120), vorne: v && (v.end <= Number(p.start) || v.start >= Number(p.end)) ? v : null }; })
+    .filter(p => { const len = p.end - p.start + (p.vorne ? p.vorne.end - p.vorne.start : 0); return p.end - p.start >= 3 && len >= 5 && len <= 180; });
+  const layout = b.layout === "geteilt" ? "geteilt" : "folgen", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
+  const wordsIn = sp => W.filter(x => Number(x[1]) >= sp.start - 0.1 && Number(x[2]) <= sp.end + 0.1);
+  const vocab = ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), keys = {};
   if (!picks.length) return json({ error: "server" }, 400);
+  // Clip-Editor 1.2: bis zu 15 Clips pro Video sind im Durchsuchen enthalten; sie werden als Entwurf angelegt und erst beim Erstellen geschnitten
+  const FREE = 15, old = await db(env, "reel_jobs?source_id=eq." + src.id + "&select=id") || [];
   const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 30;
-  const need = per * picks.length, st = creditStatus(s.acc);
-  if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
-  const style = sanitizeStyle(b.style), made = [];
-  for (const p of picks) {
-    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video" } });
-    const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break;
-    const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style } });
+  const paid = Math.max(0, old.length + picks.length - FREE), need = per * paid, st = creditStatus(s.acc);
+  if (need && st.total < need) return json({ error: "credits", need, have: st.total }, 402);
+  const style = sanitizeStyle(b.style), made = [], srcToken = await hmac(env, "internal|" + src.id), model = await modelFor(env, "fast");
+  for (let k = 0; k < picks.length; k++) {
+    const p = picks[k], charge = old.length + k + 1 > FREE;
+    if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video (über 15)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
+    const teile = p.vorne ? [p.vorne, { start: p.start, end: p.end }] : null, ws = (p.vorne ? wordsIn(p.vorne) : []).concat(wordsIn(p));
+    const draft = ws.length >= 3, clipInfo = { start: p.start, end: p.end, layout, teile };
+    const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style,
+      clips: { draft, charged: charge, source_id: src.id, clip: clipInfo } } });
     const job = rows[0];
-    try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 200, clip: { start: p.start, end: p.end } }); made.push(job.id); }
-    catch (e) { await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit" } }); await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); }
+    try {
+      if (draft) await startContainer(env, url.origin, job, "plan", { broll: b.broll !== false, openai_key: env.OPENAI_API_KEY, model, lang: s.acc.content_lang || "de", retakes, clip: clipInfo, src_id: src.id, src_token: srcToken, words: ws.map(x => ({ w: String(x[0]), s: Number(x[1]), e: Number(x[2]) })) });
+      else await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model, lang: s.acc.content_lang || "de", max_seconds: 200, vocab, retakes, clip: Object.assign({ words: ws }, clipInfo) });
+      made.push(job.id); if (p.key) keys[p.key] = job.id;
+    } catch (e) { if (charge) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit" } }); await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); }
   }
   if (!made.length) return json({ error: "render_unavailable" }, 503);
-  return json({ ok: true, ids: made });
+  // Clip-Editor 1.0: angelegte Reels an den Clip-Karten merken
+  try { const c = src.clips || {}; (c.items || []).forEach(it => { if (it && it.key && keys[it.key]) it.reel_id = keys[it.key]; }); await patchJob(env, src.id, { clips: c }); } catch (e) { console.log("Clip-Zuordnung", e.message); }
+  return json({ ok: true, ids: made, keys });
+}
+// ---------- Clip-Editor 1.0: Karten speichern und KIRA neu fragen ----------
+function clipItem(c) {
+  if (!c || typeof c !== "object") return null;
+  const n = (v, a, b) => Math.max(a, Math.min(b, Number(v) || 0)), str = (v, k) => String(v == null ? "" : v).replace(/[\u0000-\u0009\u000b-\u001f]/g, " ").slice(0, k);
+  const start = +n(c.start, 0, 1e6).toFixed(2), end = +n(c.end, 0, 1e6).toFixed(2); if (end - start < 3) return null;
+  const score = c.score != null ? Math.round(n(c.score, 0, 100)) : Math.round(n(c.punkte, 1, 10) * 10);
+  return { key: /^[a-z0-9]{3,20}$/i.test(String(c.key || "")) ? String(c.key) : Math.random().toString(36).slice(2, 10), start, end, titel: str(c.titel, 120), hook: str(c.hook, 300), warum: str(c.warum, 300), typ: str(c.typ || "wissen", 20), score,
+    plan: c.plan && typeof c.plan === "object" ? { at: /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(String(c.plan.at || "")) ? String(c.plan.at).slice(0, 40) : null, caption: str(c.plan.caption, 2200).replace(/ {2,}/g, " "), hashtags: (Array.isArray(c.plan.hashtags) ? c.plan.hashtags : []).slice(0, 12).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "").slice(0, 40)), sent: !!c.plan.sent } : null,
+    vorne: c.vorne && typeof c.vorne === "object" && Number(c.vorne.end) - Number(c.vorne.start) >= 0.5 ? { start: +n(c.vorne.start, 0, 1e6).toFixed(2), end: +n(c.vorne.end, 0, 1e6).toFixed(2), text: str(c.vorne.text, 300) } : null,
+    sel: c.sel !== false, eigen: !!c.eigen, reel_id: /^[0-9a-f-]{36}$/i.test(String(c.reel_id || "")) ? String(c.reel_id) : null };
+}
+async function routeClipsSave(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const j = await getJob(env, s, b.id);
+  if (!j || j.kind !== "clips" || j.status !== "clips_ready") return json({ error: "not_found" }, 404);
+  const c = j.clips || {}; c.items = (Array.isArray(b.items) ? b.items : []).slice(0, 40).map(clipItem).filter(Boolean);
+  if (Array.isArray(b.plan_acc)) c.plan_acc = b.plan_acc.slice(0, 10).map(x => String(x).slice(0, 80));
+  if (b.plan_rhythm && typeof b.plan_rhythm === "object") c.plan_rhythm = { days: (Array.isArray(b.plan_rhythm.days) ? b.plan_rhythm.days : []).filter(d => d >= 0 && d <= 6).slice(0, 7), time: /^\d\d:\d\d$/.test(b.plan_rhythm.time || "") ? b.plan_rhythm.time : "18:00" };
+  await patchJob(env, j.id, { clips: c }); return json({ ok: true, items: c.items });
+}
+const CLIP_ASK = "Du bist KIRA, eine erfahrene Social-Media-Cutterin. Du bekommst das Transkript eines langen Videos Satz für Satz (Nummer, Zeitmarke Minute:Sekunde, Text), die bisher gewählten Clips und einen Wunsch der Nutzerin. " +
+  "Erfülle den Wunsch genau: Themen (z. B. alle Stellen über Preise), Anzahl, Länge in Sekunden und Zeitbereiche (z. B. nur Minute 10 bis 25) beachten. Jeder Clip muss FÜR SICH ALLEIN als Reel funktionieren: beginnt mit einem Satz, der ohne Vorwissen neugierig macht, entwickelt einen Gedanken und endet an einem natürlichen Schluss. " +
+  "Keine Begrüßung, keine Technik, keine Verweise auf Folien oder frühere Teile. Clips dürfen sich nicht überschneiden. Ohne Längenwunsch 20 bis 90 Sekunden, höchstens 180. " +
+  "modus: \"ersetzen\", wenn die Nutzerin neue Vorschläge statt der bisherigen will; \"ergaenzen\", wenn sie zusätzliche Clips will (z. B. \"noch 3 mehr\"); in beiden Fällen nur neue Clips liefern, keine bisherigen wiederholen. " +
+  "Antworte NUR mit JSON: {\"antwort\":\"1 bis 2 freundliche Sätze, was du gemacht hast\",\"modus\":\"ersetzen\",\"clips\":[{\"von\":0,\"bis\":0,\"titel\":\"höchstens 8 Wörter\",\"hook\":\"erster Satz\",\"warum\":\"1 Satz, warum es als Reel funktioniert\",\"typ\":\"wissen|persoenlich|autoritaet|verkauf|leadmagnet\",\"staerke\":80}]} " +
+  "von und bis sind Satznummern (inklusive). staerke: 0 bis 100, Hook-Stärke der ersten 3 Sekunden, streng bewerten. Optional \"vorne\": Nummer EINES besonders starken Satzes von außerhalb des Clips (meist später im Video, gleiches Thema), der als Hook VOR den Clip gesetzt wird; nur wenn die Nutzerin das wünscht oder der Clip dadurch deutlich stärker wird, sonst weglassen. Titel, Hook und Begründung in der Sprache des Transkripts.";
+function clipAskCost(d) { d = Number(d) || 0; return d <= 20 * 60 ? 1 : d <= 60 * 60 ? 2 : 3; }
+// Clip-Editor 1.3: Beschreibungen für mehrere Clips auf einmal (1 Credit je angefangene 5 Clips)
+async function routeClipsCaptions(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const j = await getJob(env, s, b.id); if (!j || j.kind !== "clips" || j.status !== "clips_ready") return json({ error: "not_found" }, 404);
+  const S = (j.clips && j.clips.sentences) || [], items = ((j.clips && j.clips.items) || []).filter(c => (b.keys || []).includes(c.key)).slice(0, 15);
+  if (!items.length) return json({ error: "server" }, 400);
+  const lang = LN9[s.acc.content_lang] ? s.acc.content_lang : "de", notes = ((await readPrefs(env, s.user.id)).notes || []).join("; ");
+  const textOf = c => [c.vorne, { start: c.start, end: c.end }].filter(Boolean).map(p => S.filter(x => x.s >= p.start - 0.3 && x.e <= p.end + 0.5).map(x => x.t).join(" ")).join(" … ").slice(0, 3000);
+  const input = items.map((c, i) => "### Clip " + i + " – " + (c.titel || "") + "\n" + textOf(c)).join("\n\n");
+  const instructions = "Du schreibst Beschreibungen (Captions) für mehrere Instagram-Reels auf " + LN9[lang] + ", je eine pro Clip. Natürlich, nahbar, kein Werbesprech, keine Floskeln. Aufbau: erste Zeile als Hook (max. 12 Wörter), dann 2 bis 3 kurze Absätze mit dem Kern, dann eine Frage oder ein Kommentar-Aufruf. Höchstens 2 Emojis. Die Clips stammen aus demselben Video: Formuliere jede Beschreibung eigenständig und abwechslungsreich, nicht mit demselben Einstieg. Dazu je 5 bis 8 passende Hashtags. Antworte NUR mit JSON: {\"clips\":[{\"nr\":0,\"caption\":\"…\",\"hashtags\":[\"…\"]}]}" + (notes ? "\nVorlieben der Nutzerin: " + notes : "");
+  const r = await charged(env, s, "kira_befehl", { instructions, input }, { tier: "standard", maxTokens: 900 * items.length, credits: Math.ceil(items.length / 5) }); if (r.err) return r.err;
+  let d = {}; try { const m = /\{[\s\S]*\}/.exec(String(r.text)); d = m ? JSON.parse(m[0]) : {}; } catch (e) { d = {}; }
+  const out = (Array.isArray(d.clips) ? d.clips : []).map(x => items[x.nr | 0] ? { key: items[x.nr | 0].key, caption: String(x.caption || "").slice(0, 2200), hashtags: (Array.isArray(x.hashtags) ? x.hashtags : []).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).slice(0, 12) } : null).filter(Boolean);
+  return json({ items: out, credits: r.credits });
+}
+async function routeClipsAsk(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const befehl = String(b.befehl || "").trim().slice(0, 600); if (!befehl) return json({ error: "cmd_empty" }, 400);
+  const j = await getJob(env, s, b.id); if (!j || j.kind !== "clips" || j.status !== "clips_ready") return json({ error: "not_found" }, 404);
+  const S = (j.clips && j.clips.sentences) || []; if (!S.length) return json({ error: "not_found" }, 404);
+  const mm = t => { t = Math.max(0, Math.round(t)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+  const list = S.map((x, i) => i + " [" + mm(x.s) + "] " + x.t).join("\n").slice(0, 150000);
+  const cur = (Array.isArray(b.items) ? b.items : (j.clips.items || [])).slice(0, 40).map(c => mm(c.start) + "–" + mm(c.end) + " " + String(c.titel || "").slice(0, 80)).join("; ");
+  const LN = { de: "Deutsch", en: "Englisch", fr: "Französisch", it: "Italienisch", es: "Spanisch", pt: "Portugiesisch", nl: "Niederländisch", sv: "Schwedisch", ca: "Katalanisch" };
+  const uiLang = LN[b.ui_lang] ? b.ui_lang : "de", notes = ((await readPrefs(env, s.user.id)).notes || []).join("; ");
+  const instructions = CLIP_ASK + " Schreib \"antwort\" auf " + LN[uiLang] + "." + (notes ? " Gemerkte Vorlieben der Nutzerin (berücksichtigen, wenn passend): " + notes : "");
+  // 2.21.1: Transkript zuerst, damit OpenAI es ab der zweiten Frage aus dem Zwischenspeicher liest; Preis nach Videolänge
+  const r = await charged(env, s, "kira_befehl", { instructions, input: "Transkript:\n" + list + "\n\nVideolänge " + mm(Number(j.duration) || 0) + "\nBisherige Clips: " + (cur || "keine") + "\n\nWunsch der Nutzerin: " + befehl }, { tier: "premium", maxTokens: 4000, credits: clipAskCost(j.duration) });
+  if (r.err) return r.err;
+  let d = {}; try { const m = /\{[\s\S]*\}/.exec(String(r.text)); d = m ? JSON.parse(m[0]) : {}; } catch (e) { d = {}; }
+  const N = S.length, items = (Array.isArray(d.clips) ? d.clips : []).slice(0, 15).map(c => {
+    let a = Math.max(0, Math.min(N - 1, c.von | 0)), z = Math.max(0, Math.min(N - 1, c.bis | 0)); if (z < a) [a, z] = [z, a];
+    const v = Number.isInteger(c.vorne) && S[c.vorne] && (c.vorne < a || c.vorne > z) ? S[c.vorne] : null;
+    return clipItem({ start: Math.max(0, S[a].s - 0.15), end: S[z].e + 0.25, titel: c.titel, hook: v ? v.t : (c.hook || S[a].t), warum: c.warum, typ: c.typ, score: c.staerke, vorne: v ? { start: Math.max(0, v.s - 0.15), end: v.e + 0.25, text: v.t } : null });
+  }).filter(c => c && c.end - c.start >= 5 && c.end - c.start <= 185);
+  return json({ antwort: String(d.antwort || "").slice(0, 400), modus: d.modus === "ergaenzen" ? "ergaenzen" : "ersetzen", items, credits: r.credits });
 }
 async function startContainer(env, origin, job, phase, extra) {
   const c = getContainer(env.RENDERER, job.id);
@@ -340,7 +424,8 @@ async function routeComplete(request, env, url) {
   }
   if (j.kind === "clips") {
     await patchJob(env, j.id, { status: "analyzing", upload_id: null });
-    try { await startContainer(env, url.origin, j, "clips", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "premium"), lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
+    const rg = b.range && Number(b.range.to) > Number(b.range.from) ? { from: Math.max(0, Number(b.range.from) || 0), to: Number(b.range.to) } : null;
+    try { await startContainer(env, url.origin, j, "clips", { range: rg, vocab: ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), befehl: String(b.befehl || "").trim().slice(0, 600), openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "premium"), lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
     catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
     return json({ ok: true });
   }
@@ -718,7 +803,8 @@ async function routeRender(request, env, url) {
   }
   await patchJob(env, j.id, { status: "rendering", renders: j.renders + 1, error: null, cutout_credits: cutCredits });
   try {
-    await startContainer(env, url.origin, j, "render", { lang: s.acc.content_lang || "de", words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined });
+    const dr = j.clips && j.clips.draft && j.clips.source_id ? { draft: true, clip: j.clips.clip, src_id: j.clips.source_id, src_token: await hmac(env, "internal|" + j.clips.source_id) } : {};
+    await startContainer(env, url.origin, j, "render", Object.assign({ lang: s.acc.content_lang || "de", words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined }, dr));
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
     if (cutCredits) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cutCredits, p_action: "reel_cutout" } });
@@ -744,6 +830,7 @@ async function routeImage(request, env) {
 async function routeDelete(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const j = await getJob(env, s, url.searchParams.get("id")); if (!j) return json({ error: "not_found" }, 404);
+  if (j.kind === "clips") { const dr = await db(env, "reel_jobs?source_id=eq." + j.id + "&status=neq.done&select=id,clips") || []; if (dr.some(x => x.clips && x.clips.draft)) return json({ error: "has_drafts", detail: "Aus diesem Video gibt es noch Entwürfe, die das Video brauchen. Erstelle oder lösche sie zuerst." }, 409); }
   // 2.19.1: erst Verweise lösen (geschnittene Clips, geplante Posts), dann löschen; klappt das nicht, wird das Reel ausgeblendet
   try { await db(env, "reel_jobs?source_id=eq." + j.id, { method: "PATCH", body: { source_id: null }, prefer: "return=minimal" }); } catch (e) { console.log("Clip-Verweise", e.message); }
   let hard = true;
@@ -811,10 +898,10 @@ async function routeInternal(request, env, url) {
     const rows = await db(env, "reel_jobs?id=eq." + id + "&select=*"); const j = rows && rows[0]; if (!j) return new Response("", { status: 404 });
     if (b.phase === "clips") {
       if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Das Video ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
-      const mins = Math.max(1, Math.ceil((Number(b.duration) || 0) / 60));
-      const items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 12);
-      await patchJob(env, id, { status: items.length ? "clips_ready" : "error", duration: Number(b.duration) || 0, clips: { sentences: (b.sentences || []).slice(0, 4000), items }, error: items.length ? null : "In diesem Video habe ich keine Stellen gefunden, die als eigenes Reel funktionieren. Am besten eignen sich Videos, in denen du frei sprichst." });
-      const cost = await db(env, "action_costs?action=eq.clips_min&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 1;
+      const mins = Math.max(1, Math.ceil((Number(b.processed) || Number(b.duration) || 0) / 60));
+      const items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 15);
+      await patchJob(env, id, { status: items.length ? "clips_ready" : "error", duration: Number(b.duration) || 0, clips: { sentences: (b.sentences || []).slice(0, 4000), words: (Array.isArray(b.words) ? b.words : []).slice(0, 40000), items: items.map(clipItem).filter(Boolean) }, error: items.length ? null : "In diesem Video habe ich keine Stellen gefunden, die als eigenes Reel funktionieren. Am besten eignen sich Videos, in denen du frei sprichst." });
+      const cost = await db(env, "action_costs?action=eq.clips_min&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 2;
       try { await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: j.user_id, p_amount: mins * per, p_action: "clips_min", p_note: mins + " Minuten" } }); } catch (e) {}
       const rate = await usdEur(env); const u = b.usage || {};
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "clips_min", model_id: "whisper-1", input_tokens: Number(u.input_tokens) || 0, cached_tokens: 0, output_tokens: Number(u.output_tokens) || 0, cost_eur: Math.round((mins * 0.006 + (Number(u.input_tokens) || 0) * 0.000002 + (Number(u.output_tokens) || 0) * 0.00001) * rate * 1e6) / 1e6, credits: mins * per } }).catch(() => {});
@@ -834,7 +921,7 @@ async function routeInternal(request, env, url) {
     if (b.status === "error") {
       if (b.phase === "render" && Number(j.cutout_credits) > 0) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: Number(j.cutout_credits), p_action: "reel_cutout" } });
       await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
-      if (b.phase === "analyze") {
+      if (b.phase === "analyze" && !(j.clips && j.clips.source_id && !j.clips.charged)) {
         const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
         await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: cost && cost[0] ? Number(cost[0].credits) : 30, p_action: "reel_edit" } });
       }
@@ -845,13 +932,14 @@ async function routeInternal(request, env, url) {
         style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: await preselectGifs(env, b.effekte || []) })) });
       // Kosten protokollieren: Transkription + Schnittplan + Rechenzeit
       const rate = await usdEur(env);
-      const mins = (Number(b.duration) || 0) / 60, u = b.usage || {};
+      const mins = b.draft ? 0 : (Number(b.duration) || 0) / 60, u = b.usage || {};
       const usd = mins * 0.006 + ((u.input_tokens || 0) * 0.5 + (u.output_tokens || 0) * 2) / 1e6 + (Number(b.seconds) || 0) * 0.00006;
       await db(env, "usage", { method: "POST", prefer: "return=minimal", body: { user_id: j.user_id, action: "reel_edit", model_id: "whisper-1+plan", input_tokens: u.input_tokens || 0, cached_tokens: 0, output_tokens: u.output_tokens || 0, cost_eur: Math.round(usd * rate * 1e6) / 1e6, credits: 0 } });
     } else {
       let outBytes = 0; try { const hd = await env.REELS_BUCKET.head(keyOf(id, "final.mp4")); outBytes = hd ? hd.size : 0; } catch (e) {}
       const report = (Array.isArray(b.report) ? b.report : []).slice(0, 10).map(x => String(x).slice(0, 200));
-      await patchJob(env, id, { status: "done", length: Number(b.length) || 0, error: null, output_bytes: outBytes, cutout_credits: 0, report });
+      await patchJob(env, id, Object.assign({ status: "done", length: Number(b.length) || 0, error: null, output_bytes: outBytes, cutout_credits: 0, report },
+        Array.isArray(b.words_new) && j.clips && j.clips.draft ? { words: sanitizeWords(b.words_new), clips: Object.assign({}, j.clips, { draft: false }) } : {}));
       const failed = Number(b.cutout_failed) || 0, charged = Number(j.cutout_credits) || 0;
       if (failed && charged) {
         const nAll = ((j.style && j.style.effects) || []).filter(e => CUTOUT_TYPES.includes(e.type) && !e.off).length || failed;
