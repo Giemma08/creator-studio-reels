@@ -300,7 +300,7 @@ async function routeClipsMake(request, env, url) {
   if (!src || src.kind !== "clips" || src.status !== "clips_ready") return json({ error: "not_found" }, 404);
   const dur = Number(src.duration) || 0;
   const span = v => v && typeof v === "object" && Number(v.end) - Number(v.start) >= 0.5 ? { start: Math.max(0, Number(v.start) || 0), end: Math.min(dur || 1e9, Number(v.end) || 0) } : null;
-  const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 15).map(p => { const v = span(p.vorne); return { key: String(p.key || "").slice(0, 40), start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120), vorne: v && (v.end <= Number(p.start) || v.start >= Number(p.end)) ? v : null }; })
+  const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 15).map(p => { const v = span(p.vorne); return { agent: sanitizeAgent(p.agent), key: String(p.key || "").slice(0, 40), start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120), vorne: v && (v.end <= Number(p.start) || v.start >= Number(p.end)) ? v : null }; })
     .filter(p => { const len = p.end - p.start + (p.vorne ? p.vorne.end - p.vorne.start : 0); return p.end - p.start >= 3 && len >= 5 && len <= 180; });
   const layout = b.layout === "geteilt" ? "geteilt" : "folgen", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
   const wordsIn = sp => W.filter(x => Number(x[1]) >= sp.start - 0.1 && Number(x[2]) <= sp.end + 0.1);
@@ -317,7 +317,7 @@ async function routeClipsMake(request, env, url) {
     if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video (über 15)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
     const teile = p.vorne ? [p.vorne, { start: p.start, end: p.end }] : null, ws = (p.vorne ? wordsIn(p.vorne) : []).concat(wordsIn(p));
     const draft = ws.length >= 3, clipInfo = { start: p.start, end: p.end, layout, teile };
-    const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style,
+    const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style: p.agent ? Object.assign({}, style, { agent: p.agent }) : style,
       clips: { draft, charged: charge, source_id: src.id, clip: clipInfo } } });
     const job = rows[0];
     try {
@@ -340,6 +340,7 @@ function clipItem(c) {
   return { key: /^[a-z0-9]{3,20}$/i.test(String(c.key || "")) ? String(c.key) : Math.random().toString(36).slice(2, 10), start, end, titel: str(c.titel, 120), hook: str(c.hook, 300), warum: str(c.warum, 300), typ: str(c.typ || "wissen", 20), score,
     plan: c.plan && typeof c.plan === "object" ? { at: /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(String(c.plan.at || "")) ? String(c.plan.at).slice(0, 40) : null, caption: str(c.plan.caption, 2200).replace(/ {2,}/g, " "), hashtags: (Array.isArray(c.plan.hashtags) ? c.plan.hashtags : []).slice(0, 12).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "").slice(0, 40)), sent: !!c.plan.sent } : null,
     vorne: c.vorne && typeof c.vorne === "object" && Number(c.vorne.end) - Number(c.vorne.start) >= 0.5 ? { start: +n(c.vorne.start, 0, 1e6).toFixed(2), end: +n(c.vorne.end, 0, 1e6).toFixed(2), text: str(c.vorne.text, 300) } : null,
+    agent: sanitizeAgent(c.agent),
     sel: c.sel !== false, eigen: !!c.eigen, reel_id: /^[0-9a-f-]{36}$/i.test(String(c.reel_id || "")) ? String(c.reel_id) : null };
 }
 async function routeClipsSave(request, env) {
@@ -708,6 +709,12 @@ async function preselectGifs(env, effects) {
 const TEXT_ARTS = ["punkt", "kapitel", "liste", "zahl", "zitat", "banner", "notiz", "poesie"], TEXT_ANIMS = ["einblenden", "hoch", "pop", "schreiben", "marker"];
 const imgKey = k => typeof k === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(k);
 // Ende des Reels (2.16)
+// Verknüpfung mit einem Thema aus „Meine Woche“ (KIRA-Agent)
+function sanitizeAgent(a) {
+  if (!a || typeof a !== "object") return null; const id = v => /^[0-9a-f-]{36}$/.test(String(v || "")) ? String(v) : null;
+  const o = { week: /^\d{4}-\d\d-\d\d$/.test(String(a.week || "")) ? a.week : null, topic_id: /^[a-z0-9]{4,20}$/i.test(String(a.topic_id || "")) ? String(a.topic_id) : null, item_id: id(a.item_id), titel: String(a.titel || "").slice(0, 160), applied: !!a.applied, linked: !!a.linked };
+  return o.week && o.topic_id ? o : null;
+}
 function sanitizeEnde(e) {
   if (!e || typeof e !== "object") return null;
   const str = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
@@ -737,7 +744,7 @@ function sanitizeStyle(st) {
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
     brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
-    filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
+    filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), agent: sanitizeAgent(st.agent), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
     split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
     titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
