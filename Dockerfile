@@ -6,6 +6,8 @@ RUN apt-get update \
 WORKDIR /app
 # Python-Umgebung für die Gesichtsvermessung (OpenCV mit YuNet, MIT-Lizenz)
 RUN python3 -m venv /opt/py && /opt/py/bin/pip install --no-cache-dir opencv-python-headless==4.10.0.84 numpy==1.26.4
+# Video per Link (YouTube, Vimeo, Zoom und mehr): yt-dlp, Node dient als JavaScript-Laufzeit für YouTube
+RUN /opt/py/bin/pip install --no-cache-dir "yt-dlp[default]"
 ENV PATH="/opt/py/bin:$PATH"
 RUN mkdir -p models && curl -fsSL -o models/yunet.onnx "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 # HyperFrames (Apache 2.0) und GSAP für die Effekt-Ebenen

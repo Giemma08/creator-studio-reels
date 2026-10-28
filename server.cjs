@@ -105,8 +105,37 @@ async function makeTitleCard(job, keys, dir) {
 
 async function getInput(job, dir) {
   const input = path.join(dir, "input");
-  if (!fs.existsSync(input)) await download(job.base + "/internal/reels/input/" + job.id, hdr(job), input);
+  if (!fs.existsSync(input)) { if (job.source_url) await fetchSource(job, dir, input); else await download(job.base + "/internal/reels/input/" + job.id, hdr(job), input); }
   return input;
+}
+// Video per Link: herunterladen, als Original im Speicher ablegen, dann wie ein hochgeladenes Video weiter
+function directUrl(u) {
+  let m = /drive\.google\.com\/file\/d\/([\w-]+)/.exec(u) || /drive\.google\.com\/(?:open|uc)\?(?:.*&)?id=([\w-]+)/.exec(u);
+  if (m) return "https://drive.usercontent.google.com/download?id=" + m[1] + "&export=download&confirm=t";
+  if (/dropbox\.com\//.test(u)) { const v = u.replace(/([?&])dl=0/, "$1dl=1"); return /[?&]dl=1/.test(v) ? v : v + (v.includes("?") ? "&dl=1" : "?dl=1"); }
+  if (/\.(mp4|mov|m4v|webm|mkv)(\?|$)/i.test(u)) return u;
+  return null;
+}
+async function fetchSource(job, dir, input) {
+  const u = String(job.source_url), dl = directUrl(u), maxBytes = 6 * 1024 * 1024 * 1024;
+  if (dl) {
+    const r = await fetch(dl, { redirect: "follow" }); if (!r.ok) throw new Error("source_http_" + r.status);
+    const ct = String(r.headers.get("content-type") || ""); if (/text\/html/.test(ct)) throw new Error("source_not_public");
+    const out = fs.createWriteStream(input); let n = 0; const rd = r.body.getReader();
+    for (;;) { const { done, value } = await rd.read(); if (done) break; n += value.length; if (n > maxBytes) { out.destroy(); throw new Error("source_too_big"); } if (!out.write(value)) await new Promise(res => out.once("drain", res)); }
+    await new Promise(res => out.end(res));
+  } else {
+    const args = ["--no-playlist", "--no-progress", "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/bv*+ba/b", "--merge-output-format", "mp4", "--max-filesize", "6G", "-o", input + ".%(ext)s", "--js-runtimes", "node"];
+    if (job.source_pw) args.push("--video-password", String(job.source_pw));
+    args.push(u);
+    try { await run("yt-dlp", args); }
+    catch (e) { const msg = String(e.message || e); if (/js-runtimes/.test(msg)) { await run("yt-dlp", args.filter((a, i) => a !== "--js-runtimes" && args[i - 1] !== "--js-runtimes")); } else throw new Error(/Sign in|bot|429|403/i.test(msg) ? "source_blocked" : /password|passcode/i.test(msg) ? "source_password" : /Unsupported URL/i.test(msg) ? "source_unsupported" : "source_failed"); }
+    const f = fs.readdirSync(dir).find(x => x.startsWith("input.")); if (!f) throw new Error("source_failed"); fs.renameSync(path.join(dir, f), input);
+  }
+  // Original ablegen, damit die Clips später daraus geschnitten werden können
+  const size = fs.statSync(input).size;
+  const res = await fetch(job.base + "/internal/reels/output/" + job.id + "/source.mp4", { method: "PUT", headers: Object.assign({ "Content-Type": "video/mp4", "Content-Length": String(size) }, hdr(job)), body: fs.createReadStream(input), duplex: "half" });
+  if (!res.ok) throw new Error("upload " + res.status);
 }
 
 // ---------- Analyse ----------

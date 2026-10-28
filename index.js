@@ -48,6 +48,8 @@ export default {
       if (p === "/api/reels" && m === "GET") return await routeList(request, env, url);
       if (p === "/api/reels" && m === "DELETE") return await routeDelete(request, env, url);
         if (p === "/api/reels/start" && m === "POST") return await routeStart(request, env);
+      if (p === "/api/reels/from-url" && m === "POST") return await routeFromUrl(request, env, url);
+      if (p === "/api/reels/search" && m === "GET") return await routeSearch(request, env, url);
       if (p === "/api/reels/clips/make" && m === "POST") return await routeClipsMake(request, env, url);
       if (p === "/api/reels/clips/save" && m === "POST") return await routeClipsSave(request, env);
       if (p === "/api/reels/clips/ask" && m === "POST") return await routeClipsAsk(request, env);
@@ -396,6 +398,50 @@ async function routeClipsAsk(request, env) {
   }).filter(c => c && c.end - c.start >= 5 && c.end - c.start <= 185);
   return json({ antwort: String(d.antwort || "").slice(0, 400), modus: d.modus === "ergaenzen" ? "ergaenzen" : "ersetzen", items, credits: r.credits });
 }
+// Suche über alles Gesprochene (C2): Reels und lange Videos, mit Zeitmarke und Ausschnitt
+async function routeSearch(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const norm = w => String(w || "").toLocaleLowerCase("de-DE").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 80), qs = q.split(/\s+/).map(norm).filter(Boolean);
+  if (!qs.length || q.length < 3) return json({ hits: [] });
+  const jobs = await db(env, "reel_jobs?user_id=eq." + s.user.id + "&kind=in.(reel,clips)&status=neq.error&select=id,title,kind,status,words,clips,created_at,source_id&order=created_at.desc&limit=80") || [];
+  const hits = [];
+  for (const j of jobs) {
+    let W = [];
+    if (j.kind === "clips" && j.clips && Array.isArray(j.clips.words)) W = j.clips.words.map(x => Array.isArray(x) ? { w: x[0], s: x[1] } : { w: x.w, s: x.s });
+    else if (Array.isArray(j.words) && !j.source_id) W = j.words.map(x => ({ w: x.w, s: x.s }));
+    if (!W.length) continue; const N = W.map(x => norm(x.w)); let found = 0;
+    for (let i = 0; i < N.length && found < 3; i++) {
+      let ok = true; for (let k = 0; k < qs.length; k++) { const t = N[i + k] || ""; if (!(k === qs.length - 1 ? t.startsWith(qs[k]) : t === qs[k])) { ok = false; break; } }
+      if (!ok) continue;
+      const a = Math.max(0, i - 8), b = Math.min(W.length, i + qs.length + 10);
+      hits.push({ id: j.id, kind: j.kind, title: j.title || (j.kind === "clips" ? "Langes Video" : "Reel"), t: Number(W[i].s) || 0, before: W.slice(a, i).map(x => x.w).join(" "), match: W.slice(i, i + qs.length).map(x => x.w).join(" "), after: W.slice(i + qs.length, b).map(x => x.w).join(" "), at: j.created_at });
+      found++; i += 25;
+    }
+    if (hits.length >= 40) break;
+  }
+  return json({ hits });
+}
+
+// Video per Link (C1): YouTube, Vimeo, Zoom-Aufzeichnung, Google Drive, Dropbox oder direkter Video-Link
+async function routeFromUrl(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; let u = String(b.url || "").trim();
+  if (!/^https:\/\/[^\s]{6,1500}$/.test(u)) return json({ error: "server", detail: "Bitte einen vollständigen Link mit https:// einfügen." }, 400);
+  let host = ""; try { host = new URL(u).hostname.toLowerCase(); } catch (e) {}
+  if (!host || /^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(host) || host.endsWith(".internal")) return json({ error: "server", detail: "Dieser Link ist nicht erlaubt." }, 400);
+  const cost = await db(env, "action_costs?action=eq.clips_min&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 2;
+  const st = creditStatus(s.acc); if (st.total < per * 5) return json({ error: "credits", need: per * 5, have: st.total }, 402);
+  const lim = tierLimits(s.acc);
+  const title = String(b.title || "").trim() || (/youtu/.test(host) ? "YouTube-Video" : /vimeo/.test(host) ? "Vimeo-Video" : /zoom/.test(host) ? "Zoom-Aufzeichnung" : /google/.test(host) ? "Video aus Google Drive" : /dropbox/.test(host) ? "Video aus Dropbox" : "Video per Link");
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: title.slice(0, 120), status: "analyzing", kind: "clips" } });
+  const j = rows && rows[0]; if (!j) return json({ error: "server" }, 500);
+  const rg = b.range && Number(b.range.to) > Number(b.range.from) ? { from: Math.max(0, Number(b.range.from) || 0), to: Number(b.range.to) } : null;
+  try { await startContainer(env, url.origin, j, "clips", { source_url: u, source_pw: String(b.password || "").slice(0, 100), range: rg, vocab: ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), befehl: String(b.befehl || "").trim().slice(0, 600), openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "premium"), lang: s.acc.content_lang || "de", max_seconds: lim.minutes * 60 + 60 }); }
+  catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
+  return json({ ok: true, id: j.id });
+}
+
 async function startContainer(env, origin, job, phase, extra) {
   const c = getContainer(env.RENDERER, job.id);
   const body = Object.assign({ id: job.id, base: origin, token: await hmac(env, "internal|" + job.id) }, extra || {});
@@ -888,6 +934,13 @@ async function routeInternal(request, env, url) {
     if (!(await env.REELS_BUCKET.head(keyOf(id, "input")))) { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); const src = r && r[0] && r[0].source_id; if (src && validId(src)) return await serveObject(env, keyOf(src, "input"), request); }
     return await serveObject(env, keyOf(id, "input"), request);
   }
+  if (kind === "output" && request.method === "PUT" && parts[5] === "source.mp4") { // Video per Link: heruntergeladenes Original wird zum Original des Auftrags
+    const r = await db(env, "reel_jobs?id=eq." + id + "&select=kind,status"); const jj = r && r[0];
+    if (!jj || jj.kind !== "clips" || jj.status !== "analyzing" || (await env.REELS_BUCKET.head(keyOf(id, "input")))) return new Response("", { status: 403 });
+    await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } });
+    const h = await env.REELS_BUCKET.head(keyOf(id, "input")); if (h) await patchJob(env, id, { input_bytes: h.size });
+    return new Response("ok");
+  }
   if (kind === "output" && request.method === "PUT" && parts[5] === "input.mp4") { const r = await db(env, "reel_jobs?id=eq." + id + "&select=source_id"); if (!(r && r[0] && r[0].source_id)) return new Response("", { status: 403 }); await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } }); return new Response("ok"); }
   if (kind === "asset" && request.method === "GET") {
     const key = url.searchParams.get("key") || "";
@@ -904,6 +957,9 @@ async function routeInternal(request, env, url) {
     const b = await request.json();
     const rows = await db(env, "reel_jobs?id=eq." + id + "&select=*"); const j = rows && rows[0]; if (!j) return new Response("", { status: 404 });
     if (b.phase === "clips") {
+      const SRC_ERR = { source_blocked: "Die Plattform hat das Herunterladen blockiert. Lade das Video bitte selbst herunter und dann hier hoch.", source_password: "Das Video ist mit einem Passwort geschützt. Gib den Kenncode im Feld „Passwort“ mit an.", source_unsupported: "Diesen Link kann ich nicht öffnen. Funktionieren: YouTube, Vimeo, Zoom-Aufzeichnungen, Google Drive, Dropbox und direkte Video-Links.", source_not_public: "Der Link ist nicht öffentlich. Stell die Freigabe auf „Jeder mit dem Link“ und versuch es noch einmal.", source_too_big: "Das Video ist größer als 6 GB.", source_failed: "Das Video konnte über den Link nicht geladen werden. Lade es bitte direkt hoch." };
+      const se = String(b.error || "").replace(/^source_http_\d+$/, "source_failed");
+      if (b.status === "error" && SRC_ERR[se]) { await patchJob(env, id, { status: "error", error: SRC_ERR[se] }); return new Response("ok"); }
       if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Das Video ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
       const mins = Math.max(1, Math.ceil((Number(b.processed) || Number(b.duration) || 0) / 60));
       const items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 15);
