@@ -80,6 +80,17 @@ async function session(request, env, needActive = true) {
   const user = await getUser(request, env);
   if (!user) return { err: json({ error: "auth" }, 401) };
   const acc = await loadAccount(env, user);
+  // Marken: Mit dem Kopf „X-Brand“ arbeitet die Inhaberin in einer ihrer weiteren Marken. Daten gehören der Marke, Credits und Tarif der Inhaberin.
+  const bid = String(request.headers.get("X-Brand") || "").trim().toLowerCase();
+  if (bid && bid !== user.id && /^[0-9a-f-]{36}$/.test(bid)) {
+    let br = null; try { br = ((await db(env, "brands?id=eq." + bid + "&owner_id=eq." + user.id + "&select=id,name")) || [])[0]; } catch (e) {}
+    if (br) {
+      const bacc = await loadAccount(env, { id: bid, email: user.email });
+      const merged = Object.assign({}, bacc, { plans: acc.plans, plan_id: acc.plan_id, active: acc.active, monthly_credits_left: acc.monthly_credits_left, bonus_credits: acc.bonus_credits, period_end: acc.period_end, credits_month: acc.credits_month, is_admin: acc.is_admin, price_override: acc.price_override, brand_owner: user.id, brand_name: br.name });
+      if (needActive && !acc.active) return { err: json({ error: "inactive" }, 403) };
+      return { user: { id: bid, email: user.email }, acc: merged, owner: user.id, payer: user.id };
+    }
+  }
   if (needActive && !acc.active) return { err: json({ error: "inactive" }, 403) };
   return { user, acc };
 }
@@ -179,7 +190,7 @@ async function charged(env, s, action, { instructions, input }, opts = {}) {
   // Credits abbuchen (erst nach erfolgreicher Antwort)
   let credits = status;
   if (cost.credits > 0) {
-    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cost.credits, p_action: action } });
+    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: cost.credits, p_action: action } });
     const row = Array.isArray(spent) ? spent[0] : spent;
     if (row) credits = { monthly: row.monthly_left, monthly_total: status.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left };
   }
@@ -316,7 +327,7 @@ async function routeClipsMake(request, env, url) {
   const style = sanitizeStyle(b.style), made = [], srcToken = await hmac(env, "internal|" + src.id), model = await modelFor(env, "fast");
   for (let k = 0; k < picks.length; k++) {
     const p = picks[k], charge = old.length + k + 1 > FREE;
-    if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video (über 15)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
+    if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video (über 15)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
     const teile = p.vorne ? [p.vorne, { start: p.start, end: p.end }] : null, ws = (p.vorne ? wordsIn(p.vorne) : []).concat(wordsIn(p));
     const draft = ws.length >= 3, clipInfo = { start: p.start, end: p.end, layout, teile };
     const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style: p.agent ? Object.assign({}, style, { agent: p.agent }) : style,
@@ -326,7 +337,7 @@ async function routeClipsMake(request, env, url) {
       if (draft) await startContainer(env, url.origin, job, "plan", { broll: b.broll !== false, openai_key: env.OPENAI_API_KEY, model, lang: s.acc.content_lang || "de", retakes, clip: clipInfo, src_id: src.id, src_token: srcToken, words: ws.map(x => ({ w: String(x[0]), s: Number(x[1]), e: Number(x[2]) })) });
       else await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model, lang: s.acc.content_lang || "de", max_seconds: 200, vocab, retakes, clip: Object.assign({ words: ws }, clipInfo) });
       made.push(job.id); if (p.key) keys[p.key] = job.id;
-    } catch (e) { if (charge) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: per, p_action: "reel_edit" } }); await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); }
+    } catch (e) { if (charge) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: per, p_action: "reel_edit" } }); await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); }
   }
   if (!made.length) return json({ error: "render_unavailable" }, 503);
   // Clip-Editor 1.0: angelegte Reels an den Clip-Karten merken
@@ -486,7 +497,7 @@ async function routeComplete(request, env, url) {
   // Credits abbuchen
   const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
   const need = cost && cost[0] ? Number(cost[0].credits) : 30;
-  const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: need, p_action: "reel_edit" } });
+  const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "reel_edit" } });
   const row = Array.isArray(spent) ? spent[0] : spent;
   if (!row || row.ok === false) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
   const style = sanitizeStyle(b.style);
@@ -495,7 +506,7 @@ async function routeComplete(request, env, url) {
     await startContainer(env, url.origin, j, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: clips, vocab: ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800) });
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
-    await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: need, p_action: "reel_edit" } });
+    await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "reel_edit" } });
     await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Deine Credits wurden zurückgebucht." });
     return json({ error: "render_unavailable" }, 503);
   }
@@ -833,7 +844,7 @@ async function routeRender(request, env, url) {
   if (j.renders >= 3) {
     const cost = await db(env, "action_costs?action=eq.reel_rerender&select=credits");
     const need = cost && cost[0] ? Number(cost[0].credits) : 5;
-    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: need, p_action: "reel_rerender" } });
+    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "reel_rerender" } });
     const row = Array.isArray(spent) ? spent[0] : spent;
     if (!row || row.ok === false) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
     const st = creditStatus(s.acc);
@@ -845,10 +856,10 @@ async function routeRender(request, env, url) {
   if (nCut) {
     if (!env.REPLICATE_API_TOKEN) return json({ error: "cutout_off" }, 503);
     const cc = await db(env, "action_costs?action=eq.reel_cutout&select=credits"); const per = cc && cc[0] ? Number(cc[0].credits) : 8;
-    const sp = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.user.id, p_amount: nCut * per, p_action: "reel_cutout", p_note: nCut + " Freistellungs-Effekte" } });
+    const sp = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: nCut * per, p_action: "reel_cutout", p_note: nCut + " Freistellungs-Effekte" } });
     const r0 = Array.isArray(sp) ? sp[0] : sp;
     if (!r0 || r0.ok === false) {
-      if (credits) { const c2 = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: c2 && c2[0] ? Number(c2[0].credits) : 5, p_action: "reel_rerender" } }); }
+      if (credits) { const c2 = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: c2 && c2[0] ? Number(c2[0].credits) : 5, p_action: "reel_rerender" } }); }
       return json({ error: "credits", need: nCut * per, have: creditStatus(s.acc).total }, 402);
     }
     cutCredits = nCut * per;
@@ -860,8 +871,8 @@ async function routeRender(request, env, url) {
     await startContainer(env, url.origin, j, "render", Object.assign({ lang: s.acc.content_lang || "de", words: j.words, hook_titel: j.hook_titel, style: j.style, replicate_key: nCut ? env.REPLICATE_API_TOKEN : undefined }, dr));
   } catch (e) {
     console.log("Werkstatt nicht erreichbar:", e && e.message);
-    if (cutCredits) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cutCredits, p_action: "reel_cutout" } });
-    if (credits) { const cost = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.user.id, p_amount: cost && cost[0] ? Number(cost[0].credits) : 5, p_action: "reel_rerender" } }); }
+    if (cutCredits) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: cutCredits, p_action: "reel_cutout" } });
+    if (credits) { const cost = await db(env, "action_costs?action=eq.reel_rerender&select=credits"); await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: cost && cost[0] ? Number(cost[0].credits) : 5, p_action: "reel_rerender" } }); }
     await patchJob(env, j.id, { status: j.status === "done" ? "done" : "ready", renders: j.renders });
     return json({ error: "render_unavailable" }, 503);
   }
