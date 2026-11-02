@@ -51,16 +51,19 @@ async function probe(file) {
 
 // Mehrere Clips (2.15): alle laden, auf 1080 × 1920 bringen, aneinanderhängen und als neues Original hochladen
 async function joinClips(job, dir) {
-  const n = Math.max(2, Math.min(6, Number(job.clips) || 2)), files = [];
+  const n = Math.max(Array.isArray(job.trims) && job.trims.length ? 1 : 2, Math.min(6, Number(job.clips) || 2)), files = [];
   for (let k = 1; k <= n; k++) { const f = path.join(dir, "clip" + k); await download(job.base + "/internal/reels/input/" + job.id + (k > 1 ? "/" + k : ""), hdr(job), f); files.push(f); }
   const args = ["-y", "-loglevel", "error"], f = [];
   const infos = [];
   for (const fl of files) infos.push(await probe(fl));
   files.forEach(fl => args.push("-i", fl));
   infos.forEach((inf, i) => {
-    f.push("[" + i + ":v]fps=30,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p[v" + i + "]");
-    if (inf.hasAudio) f.push("[" + i + ":a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo[a" + i + "]");
-    else f.push("anullsrc=r=44100:cl=stereo,atrim=0:" + Math.max(0.1, inf.duration).toFixed(3) + "[a" + i + "]");
+    // Stimmungs-Reel: jeden Clip auf seine geplante Länge kürzen, Naturton leise
+    const T = Array.isArray(job.trims) && Number(job.trims[i]) > 0 ? Math.min(Number(job.trims[i]), inf.duration || 999) : 0;
+    const tv = T ? "trim=0:" + T.toFixed(3) + ",setpts=PTS-STARTPTS," : "", ta = T ? "atrim=0:" + T.toFixed(3) + ",asetpts=PTS-STARTPTS," : "";
+    f.push("[" + i + ":v]" + tv + "fps=30,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p[v" + i + "]");
+    if (inf.hasAudio) f.push("[" + i + ":a]" + ta + "aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo" + (T ? ",volume=0.35" : "") + "[a" + i + "]");
+    else f.push("anullsrc=r=44100:cl=stereo,atrim=0:" + Math.max(0.1, T || inf.duration).toFixed(3) + "[a" + i + "]");
   });
   f.push(infos.map((_, i) => "[v" + i + "][a" + i + "]").join("") + "concat=n=" + n + ":v=1:a=1[v][a]");
   const out = path.join(dir, "input");
@@ -141,7 +144,7 @@ async function fetchSource(job, dir, input) {
 // ---------- Analyse ----------
 async function analyze(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
-  if (!job.clip && Number(job.clips) > 1) await joinClips(job, dir);
+  if (!job.clip && (Number(job.clips) > 1 || (Array.isArray(job.trims) && job.trims.length))) await joinClips(job, dir);
   const input = job.clip ? await cutClip(job, dir) : await getInput(job, dir);
   const info = await probe(input);
   if (info.duration > (job.max_seconds || 185)) throw new Error("too_long");

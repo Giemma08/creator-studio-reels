@@ -368,7 +368,8 @@ function textEvents(words, map, style) {
     } else if (t.art === "ende_gross") {
       put("TxtB", 90, 90, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\4c" + acc + "\\4a&H00&\\bord26\\shad0", text);
     } else if (t.art === "poesie") {
-      put("TxtO", 90, 90, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\bord0\\shad3\\4c&H000000&\\4a&H60&", String(text).replace(/\*([^*]+)\*/g, "{\\c" + acc + "\\i1\\fs" + Math.round(A.size * 1.25) + "}$1{\\c&H00FFFFFF&\\i0\\fs" + A.size + "}"));
+      const pf = t.font || A.font, ps = Number(t.size) || A.size;
+      put("TxtO", 90, 90, 540, "\\fn" + pf + "\\fs" + ps + "\\b0\\c&H00FFFFFF&\\bord0\\shad3\\4c&H000000&\\4a&H60&", String(text).replace(/\*([^*]+)\*/g, "{\\c" + acc + "\\i1\\fs" + Math.round(ps * 1.25) + "}$1{\\c&H00FFFFFF&\\i0\\fs" + ps + "}"));
     } else if (t.art === "karte_titel") {
       put("TxtO", 90, 90, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H001A1A1A&\\bord0\\shad0\\frz-3", text);
     } else if (t.art === "ende_text") {

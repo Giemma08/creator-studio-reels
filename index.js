@@ -63,6 +63,9 @@ export default {
       if (p === "/api/reels/prefs") return await routePrefs(request, env, m);
       if (p === "/api/reels/pip" && m === "PUT") return await routePip(request, env, url);
       if (p === "/api/reels/caption" && m === "POST") return await routeCaption(request, env);
+      if (p === "/api/reels/stock" && m === "GET") return await routeStock(request, env, url);
+      if (p === "/api/reels/mood-text" && m === "POST") return await routeMoodText(request, env);
+      if (p === "/api/reels/mood" && m === "POST") return await routeMood(request, env, url);
       if (p === "/api/reels/profil" && m === "POST") return await routeProfil(request, env, url);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
@@ -651,6 +654,72 @@ async function routeCaption(request, env) {
   let d = {}; try { d = JSON.parse(String(r.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const m = /\{[\s\S]*\}/.exec(String(r.text)); try { d = m ? JSON.parse(m[0]) : {}; } catch (e2) {} }
   return json({ caption: String(d.caption || "").slice(0, 2200), hashtags: (Array.isArray(d.hashtags) ? d.hashtags : []).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).slice(0, 12), credits: r.credits });
 }
+// ---------- Stimmungs-Reel aus Naturvideos: Text, Pexels-Clips, automatisch zusammensetzen ----------
+async function routeStock(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  if (!env.PEXELS_API_KEY) return json({ error: "server", detail: "Die Videosuche ist noch nicht eingerichtet (PEXELS_API_KEY fehlt)." }, 400);
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 100); if (!q) return json({ error: "server", detail: "Bitte gib einen Suchbegriff ein." }, 400);
+  const page = Math.max(1, Math.min(10, Number(url.searchParams.get("page")) || 1));
+  const r = await fetch("https://api.pexels.com/videos/search?orientation=portrait&size=medium&per_page=15&page=" + page + "&query=" + encodeURIComponent(q), { headers: { Authorization: env.PEXELS_API_KEY } });
+  if (!r.ok) return json({ error: "server", detail: "Die Videosuche hat nicht geklappt (" + r.status + ")." }, 502);
+  const d = await r.json().catch(() => ({}));
+  const vids = (d.videos || []).map(v => { const files = (v.video_files || []).filter(f => f.file_type === "video/mp4" && f.link && f.height >= f.width);
+      const pick = files.filter(f => f.height >= 1000 && f.height <= 2000).sort((a, b) => a.height - b.height)[0] || files.sort((a, b) => b.height - a.height)[0];
+      const prev = files.filter(f => f.height <= 960).sort((a, b) => b.height - a.height)[0] || pick;
+      return pick ? { id: v.id, dur: v.duration, url: pick.link, preview: prev && prev.link, poster: v.image, by: (v.user && v.user.name) || "", page: v.url } : null; }).filter(Boolean);
+  return json({ videos: vids });
+}
+async function routeMoodText(request, env) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const thema = String(b.thema || "").trim().slice(0, 600); if (!thema) return json({ error: "server", detail: "Bitte gib ein Thema ein." }, 400);
+  const strom = b.variante !== "satz", lang = LN9[s.acc.content_lang] ? s.acc.content_lang : "de", notes = ((await readPrefs(env, s.user.id)).notes || []).join("; ");
+  const instructions = "Du schreibst den Text für ein ruhiges Stimmungs-Reel auf " + LN9[lang] + ": Naturvideo im Hintergrund, Text darauf, ruhige Musik, dazu eine Caption. Ton: persönlich, nahbar, nachdenklich, kein Werbesprech, keine Floskeln, keine Emojis im Reel-Text." +
+    (strom ? "\n\nVariante GEDANKENSTROM: ein zusammenhängender Gedanke in 3 bis 5 Abschnitten (je 8 bis 22 Wörter). Abschnitt 1 ist der Hook mit Aha-Moment. Bei jedem Abschnitt wechselt das Bild. Die Caption besteht aus genau diesem Text als Fließtext, danach eine Frage zum Mitreden." : "\n\nVariante EIN SATZ: genau eine Aussage mit Aha-Moment und Wiedererkennung (12 bis 28 Wörter), sie steht das ganze Reel über im Bild. Die Caption ist ein eigener, ergänzender Text: Einordnung, Erklärung, persönliche Note, 80 bis 160 Wörter, am Ende eine Frage zum Mitreden.") +
+    "\n\nAußerdem: 3 kurze englische Suchbegriffe für passende ruhige Naturvideos im Hochformat (z. B. ‚ocean waves dark‘, ‚sunlight forest‘, ‚clouds mountains‘), passend zur Stimmung, und 5 bis 8 Hashtags." + (notes ? "\n\nMerksätze der Nutzerin: " + notes.slice(0, 800) : "") +
+    "\n\nAntworte NUR mit JSON: {\"abschnitte\":[\"\"],\"caption\":\"\",\"hashtags\":[\"\"],\"suche\":[\"\"]}";
+  const r = await charged(env, s, "mood_text", { instructions, input: "Thema: " + thema }, { tier: "premium", maxTokens: 2500 }); if (r.err) return r.err;
+  let d = {}; try { d = JSON.parse(String(r.text).replace(/^```(json)?|```$/g, "").trim()); } catch (e) { const mm = /\{[\s\S]*\}/.exec(String(r.text)); try { d = mm ? JSON.parse(mm[0]) : {}; } catch (e2) {} }
+  const ab = (Array.isArray(d.abschnitte) ? d.abschnitte : []).map(x => String(x).trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 5 : 1);
+  if (!ab.length) return json({ error: "empty_reply" }, 502);
+  return json({ abschnitte: ab, caption: String(d.caption || "").slice(0, 2200), hashtags: (Array.isArray(d.hashtags) ? d.hashtags : []).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).slice(0, 10), suche: (Array.isArray(d.suche) ? d.suche : []).map(x => String(x).slice(0, 40)).slice(0, 3), credits: r.credits });
+}
+function moodSecs(t) { const w = String(t).split(/\s+/).filter(Boolean).length; return Math.max(3.5, Math.min(9, w / 2.4 + 1.6)); }
+function moodSize(t) { const n = String(t).length; return n > 150 ? 58 : n > 110 ? 64 : n > 70 ? 72 : n > 40 ? 82 : 92; }
+async function routeMood(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const b = await readJson(request) || {}; const strom = b.variante !== "satz";
+  const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 6 : 1);
+  if (!lines.length) return json({ error: "server", detail: "Bitte schreib zuerst den Text." }, 400);
+  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*pexels\.com\//i.test(String(c.url || ""))).slice(0, 4).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
+  if (!clips.length) return json({ error: "server", detail: "Bitte wähl mindestens ein Video." }, 400);
+  // Zeitplan: Gedankenstrom = jeder Abschnitt seine Zeit, Bilder wechseln mit den Gedanken; Ein Satz = eine Aussage über das ganze Reel
+  const secs = strom ? lines.map(moodSecs) : [Math.max(7, Math.min(15, moodSecs(lines[0]) + 3.5))];
+  const per = clips.map(() => []); if (strom) lines.forEach((_, i) => per[Math.min(clips.length - 1, Math.floor(i * clips.length / lines.length))].push(i)); else per[0].push(0);
+  let trims = clips.map((c, k) => { const want = strom ? per[k].reduce((a, i) => a + secs[i], 0) : secs[0] / clips.length; return Math.max(2.5, Math.min(c.dur - 0.1, want || 4)); });
+  if (strom && clips.length > lines.length) trims = trims.slice(0, lines.length);
+  const used = clips.slice(0, trims.length);
+  const cost = await db(env, "action_costs?action=eq.mood_reel&select=credits"); const need = cost && cost[0] ? Number(cost[0].credits) : 5;
+  if (creditStatus(s.acc).total < need) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
+  // Texte zeitlich verteilen
+  const texts = []; let t = 0;
+  if (strom) { let k0 = 0, acc = 0; lines.forEach((l, i) => { const k = per.findIndex(a => a.includes(i)); if (k !== k0) { t = trims.slice(0, k).reduce((a, x) => a + x, 0); k0 = k; }
+      const share = per[k].length ? trims[k] * (secs[i] / per[k].reduce((a, j) => a + secs[j], 0)) : secs[i];
+      texts.push({ id: "m" + i + Date.now().toString(36), art: "poesie", text: l, von: 0, at: Math.round((t + 0.3) * 100) / 100, dur: Math.round(Math.max(1.5, share - 0.5) * 100) / 100, anim: "einblenden", y: 40, font: CAP_FONTS.includes(b.font) ? b.font : undefined, size: moodSize(l) }); t += share; }); }
+  else { const total = trims.reduce((a, x) => a + x, 0); texts.push({ id: "m0" + Date.now().toString(36), art: "poesie", text: lines[0], von: 0, at: 0.5, dur: Math.round(Math.max(3, total - 0.9) * 100) / 100, anim: "einblenden", y: 40, font: CAP_FONTS.includes(b.font) ? b.font : undefined, size: moodSize(lines[0]) }); }
+  const prefs = await readPrefs(env, s.user.id);
+  const style = sanitizeStyle(Object.assign({}, prefs.style || {}, { captions: false, texts, caption: String(b.caption || "").slice(0, 2200), hashtags: Array.isArray(b.hashtags) ? b.hashtags : [] }));
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: ("🌿 " + lines[0]).slice(0, 120), status: "analyzing", kind: "reel", input_bytes: 0, style } });
+  const job = rows && rows[0]; if (!job) return json({ error: "server" }, 500);
+  let bytes = 0;
+  try { for (let k = 0; k < used.length; k++) { const r = await fetch(used[k].url); if (!r.ok) throw new Error("clip " + r.status); const buf = await r.arrayBuffer(); bytes += buf.byteLength; await env.REELS_BUCKET.put(keyOf(job.id, k ? "input" + (k + 1) : "input"), buf, { httpMetadata: { contentType: "video/mp4" } }); } }
+  catch (e) { await patchJob(env, job.id, { status: "error", error: "Ein Video konnte nicht geladen werden. Bitte wähl ein anderes." }); return json({ error: "server", detail: "Ein Video konnte nicht geladen werden. Bitte wähl ein anderes." }, 502); }
+  const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "mood_reel" } });
+  const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) { await patchJob(env, job.id, { status: "error", error: "Nicht genug Credits." }); return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402); }
+  await patchJob(env, job.id, { input_bytes: bytes });
+  try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: used.length, trims, vocab: "" }); }
+  catch (e) { await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
+  return json({ ok: true, id: job.id });
+}
 // Reel-Profil aus Vorbild-Reels: Standbilder ansehen und daraus Stil-Vorschläge und Notizen ableiten
 async function routeProfil(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
@@ -785,7 +854,10 @@ function sanitizeTexts(list) {
     if (!t || !TEXT_ARTS.includes(t.art)) return null;
     const von = Math.round(Number(t.von)); if (!isFinite(von) || von < 0) return null;
     const bis = t.bis == null || t.bis === "" || !isFinite(Number(t.bis)) ? null : Math.max(von, Math.round(Number(t.bis)));
-    const o = { id: str(t.id, 24), art: t.art, text: str(t.text, 160), at: t.at != null && isFinite(Number(t.at)) ? Math.max(0, Number(t.at)) : undefined, dur: t.dur != null && isFinite(Number(t.dur)) ? Math.max(0.5, Math.min(10, Number(t.dur))) : undefined, text2: str(t.text2, 40), von, bis, anim: TEXT_ANIMS.includes(t.anim) ? t.anim : "einblenden", y: t.y == null || t.y === "" || !isFinite(Number(t.y)) ? null : Math.max(4, Math.min(90, Math.round(Number(t.y)))), off: !!t.off };
+    const poe = t.art === "poesie";
+    const o = { id: str(t.id, 24), art: t.art, text: str(t.text, poe ? 260 : 160), at: t.at != null && isFinite(Number(t.at)) ? Math.max(0, Number(t.at)) : undefined, dur: t.dur != null && isFinite(Number(t.dur)) ? Math.max(0.5, Math.min(poe ? 40 : 10, Number(t.dur))) : undefined, text2: str(t.text2, 40), von, bis, anim: TEXT_ANIMS.includes(t.anim) ? t.anim : "einblenden", y: t.y == null || t.y === "" || !isFinite(Number(t.y)) ? null : Math.max(4, Math.min(90, Math.round(Number(t.y)))), off: !!t.off };
+    if (poe && CAP_FONTS.includes(t.font)) o.font = t.font;
+    if (poe && isFinite(Number(t.size)) && Number(t.size) > 0) o.size = Math.max(40, Math.min(110, Math.round(Number(t.size))));
     if (t.art === "liste") o.items = (Array.isArray(t.items) ? t.items : String(t.text || "").split(/\n|;/)).map(x => str(x, 60)).filter(Boolean).slice(0, 6);
     return (o.text || (o.items && o.items.length)) ? o : null;
   }).filter(Boolean);
