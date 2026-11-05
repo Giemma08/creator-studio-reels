@@ -449,7 +449,7 @@ function colorFilters(style) {
   if (w) out.push("colorbalance=rs=" + (0.035 * w).toFixed(3) + ":bs=" + (-0.035 * w).toFixed(3) + ":rm=" + (0.02 * w).toFixed(3) + ":bm=" + (-0.02 * w).toFixed(3));
   if (sh) out.push("unsharp=5:5:" + (0.35 * sh).toFixed(2));
   // Abdunkeln (Stimmungs-Reel): Bild gleichmäßig dunkler, damit Text gut lesbar ist
-  const dk = n("abdunkeln", 0, 4); if (dk) { const f = (1 - 0.13 * dk).toFixed(3); out.push("colorchannelmixer=rr=" + f + ":gg=" + f + ":bb=" + f); }
+  const dk = n("abdunkeln", 0, 4); if (dk) { const f = (1 - 0.15 * dk).toFixed(3); out.push("colorchannelmixer=rr=" + f + ":gg=" + f + ":bb=" + f); }
   return out;
 }
 // Weiche Kurve 0..1 (smoothstep) als ffmpeg-Ausdruck
