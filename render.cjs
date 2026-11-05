@@ -346,7 +346,7 @@ function textEvents(words, map, style) {
     if (t.art === "zitat") { const q = quoteMarks(lang); text = q[0] + text + q[1]; }
     const put = (sty, mL, mR, x, tagsBase, txt) => {
       if (kind === "schreiben") typeSteps(txt, win.start, win.end).forEach(st => dlg(st.t0, st.t1, sty, mL, mR, "\\an" + A.an + "\\pos(" + x + "," + y + ")" + (st.t1 >= win.end - 0.001 ? "\\fad(0,200)" : "") + tagsBase, st.txt));
-      else dlg(win.start, win.end, sty, mL, mR, "\\an" + A.an + animTags(kind, x, y) + tagsBase, txt);
+      else { let tg = animTags(kind, x, y); if (win.start < 0.05) tg = tg.replace(/\\fad\((\d+),/, "\\fad(0,"); dlg(win.start, win.end, sty, mL, mR, "\\an" + A.an + tg + tagsBase, txt); } // ab Sekunde 0 sofort sichtbar (erstes Bild = Vorschaubild)
     };
     if (t.art === "punkt") {
       shape(win.start, win.end, kind === "schreiben" ? "einblenden" : kind, 90, y + 7, "pfeil", acc, 3);
