@@ -657,17 +657,40 @@ async function routeCaption(request, env) {
 // ---------- Stimmungs-Reel aus Naturvideos: Text, Pexels-Clips, automatisch zusammensetzen ----------
 async function routeStock(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
-  if (!env.PEXELS_API_KEY) return json({ error: "server", detail: "Die Videosuche ist noch nicht eingerichtet (PEXELS_API_KEY fehlt)." }, 400);
+  if (!env.PEXELS_API_KEY && !env.PIXABAY_API_KEY) return json({ error: "server", detail: "Die Videosuche ist noch nicht eingerichtet (PIXABAY_API_KEY fehlt beim Reels-Worker)." }, 400);
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 100); if (!q) return json({ error: "server", detail: "Bitte gib einen Suchbegriff ein." }, 400);
   const page = Math.max(1, Math.min(10, Number(url.searchParams.get("page")) || 1));
-  const r = await fetch("https://api.pexels.com/videos/search?orientation=portrait&size=medium&per_page=15&page=" + page + "&query=" + encodeURIComponent(q), { headers: { Authorization: env.PEXELS_API_KEY } });
+  let r;
+  // Pixabay (Standard): kostenlos, kommerziell nutzbar, Schlüssel sofort nach Anmeldung
+  if (env.PIXABAY_API_KEY) {
+    // Pixabay verlangt, Suchergebnisse 24 Stunden zwischenzuspeichern
+    const ck = new Request("https://kira-cache.internal/pixabay?q=" + encodeURIComponent(q.toLowerCase()) + "&page=" + page), cache = typeof caches !== "undefined" ? caches.default : null;
+    const hit = cache ? await cache.match(ck).catch(() => null) : null;
+    if (hit) r = hit;
+    else { try { r = await fetch("https://pixabay.com/api/videos/?key=" + encodeURIComponent(String(env.PIXABAY_API_KEY).trim()) + "&q=" + encodeURIComponent(q.slice(0, 95)) + "&per_page=40&page=" + page + "&safesearch=true&video_type=film", { signal: AbortSignal.timeout(15000) }); }
+      catch (e) { console.log("Pixabay", e && e.message); return json({ error: "server", detail: "Pixabay antwortet gerade nicht. Bitte versuch es gleich noch einmal." }, 504); }
+      if (r.status === 429) return json({ error: "server", detail: "Gerade wurden sehr viele Videos gesucht. Bitte versuch es in einer Minute noch einmal." }, 429);
+      if (r.ok && cache) { const body = await r.text(); r = new Response(body, { status: 200, headers: { "content-type": "application/json", "cache-control": "public, max-age=86400" } }); await cache.put(ck, r.clone()).catch(() => {}); } }
+    if (r.status === 400 || r.status === 401 || r.status === 403) { const t = (await r.text()).slice(0, 120); console.log("Pixabay", r.status, t); return json({ error: "server", detail: /key/i.test(t) ? "Der Pixabay-Schlüssel wird nicht akzeptiert. Bitte prüf PIXABAY_API_KEY beim Reels-Worker." : "Die Videosuche hat nicht geklappt (" + r.status + ")." }, 502); }
+    if (!r.ok) return json({ error: "server", detail: "Die Videosuche hat nicht geklappt (" + r.status + ")." }, 502);
+    const d = await r.json().catch(() => ({}));
+    const vids = (d.hits || []).map(h => { const v = h.videos || {}; const sizes = ["large", "medium", "small"].map(k => v[k]).filter(x => x && x.url);
+        const pick = sizes.filter(x => Math.max(x.width, x.height) >= 1000 && Math.max(x.width, x.height) <= 2000)[0] || sizes[0]; const prev = v.tiny && v.tiny.url ? v.tiny : (v.small || pick);
+        if (!pick) return null; const poster = (prev && prev.thumbnail) || (pick && pick.thumbnail) || "";
+        return { id: "px" + h.id, dur: h.duration, url: pick.url, preview: prev && prev.url, poster, by: h.user || "", page: h.pageURL, portrait: pick.height >= pick.width }; }).filter(Boolean)
+      .sort((a, b) => (b.portrait ? 1 : 0) - (a.portrait ? 1 : 0)).slice(0, 18);
+    return json({ videos: vids, source: "Pixabay" });
+  }
+  try { r = await fetch("https://api.pexels.com/videos/search?orientation=portrait&size=medium&per_page=15&page=" + page + "&query=" + encodeURIComponent(q), { headers: { Authorization: String(env.PEXELS_API_KEY).trim() }, signal: AbortSignal.timeout(15000) }); }
+  catch (e) { console.log("Pexels", e && e.message); return json({ error: "server", detail: "Pexels antwortet gerade nicht. Bitte versuch es gleich noch einmal." }, 504); }
+  if (r.status === 401 || r.status === 403) return json({ error: "server", detail: "Der Pexels-Schlüssel wird nicht akzeptiert. Bitte prüf PEXELS_API_KEY beim Reels-Worker." }, 502);
   if (!r.ok) return json({ error: "server", detail: "Die Videosuche hat nicht geklappt (" + r.status + ")." }, 502);
   const d = await r.json().catch(() => ({}));
   const vids = (d.videos || []).map(v => { const files = (v.video_files || []).filter(f => f.file_type === "video/mp4" && f.link && f.height >= f.width);
       const pick = files.filter(f => f.height >= 1000 && f.height <= 2000).sort((a, b) => a.height - b.height)[0] || files.sort((a, b) => b.height - a.height)[0];
       const prev = files.filter(f => f.height <= 960).sort((a, b) => b.height - a.height)[0] || pick;
-      return pick ? { id: v.id, dur: v.duration, url: pick.link, preview: prev && prev.link, poster: v.image, by: (v.user && v.user.name) || "", page: v.url } : null; }).filter(Boolean);
-  return json({ videos: vids });
+      return pick ? { id: v.id, dur: v.duration, url: pick.link, preview: prev && prev.link, poster: v.image, by: (v.user && v.user.name) || "", page: v.url, portrait: true } : null; }).filter(Boolean);
+  return json({ videos: vids, source: "Pexels" });
 }
 async function routeMoodText(request, env) {
   const s = await session(request, env); if (s.err) return s.err;
@@ -690,7 +713,7 @@ async function routeMood(request, env, url) {
   const b = await readJson(request) || {}; const strom = b.variante !== "satz";
   const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().replace(/^(?:[*•·\-–—]|\d+[.)])\s+/, "").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 16 : 1);
   if (!lines.length) return json({ error: "server", detail: "Bitte schreib zuerst den Text." }, 400);
-  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*pexels\.com\//i.test(String(c.url || ""))).slice(0, 4).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
+  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*(pexels\.com|pixabay\.com)\//i.test(String(c.url || ""))).slice(0, 4).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
   if (!clips.length) return json({ error: "server", detail: "Bitte wähl mindestens ein Video." }, 400);
   // Zeitplan: Gedankenstrom = jeder Abschnitt seine Zeit, Bilder wechseln mit den Gedanken; Ein Satz = eine Aussage über das ganze Reel
   const secs = strom ? lines.map(moodSecs) : [Math.max(7, Math.min(15, moodSecs(lines[0]) + 3.5))];
