@@ -60,7 +60,9 @@ async function joinClips(job, dir) {
   infos.forEach((inf, i) => {
     // Stimmungs-Reel: jeden Clip auf seine geplante Länge kürzen, Naturton leise
     const T = Array.isArray(job.trims) && Number(job.trims[i]) > 0 ? Math.min(Number(job.trims[i]), inf.duration || 999) : 0;
-    const tv = T ? "trim=0:" + T.toFixed(3) + ",setpts=PTS-STARTPTS," : "", ta = T ? "atrim=0:" + T.toFixed(3) + ",asetpts=PTS-STARTPTS," : "";
+    // Anfang überspringen, wenn genug Material da ist: viele Stock-Videos beginnen mit einer Blende
+    const off = T && (inf.duration || 0) > T + 1.2 ? 0.6 : 0;
+    const tv = T ? "trim=" + off.toFixed(3) + ":" + (off + T).toFixed(3) + ",setpts=PTS-STARTPTS," : "", ta = T ? "atrim=" + off.toFixed(3) + ":" + (off + T).toFixed(3) + ",asetpts=PTS-STARTPTS," : "";
     f.push("[" + i + ":v]" + tv + "fps=30,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p[v" + i + "]");
     if (inf.hasAudio) f.push("[" + i + ":a]" + ta + "aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo" + (T ? ",volume=0.35" : "") + "[a" + i + "]");
     else f.push("anullsrc=r=44100:cl=stereo,atrim=0:" + Math.max(0.1, T || inf.duration).toFixed(3) + "[a" + i + "]");
@@ -301,6 +303,8 @@ async function renderCore(job) {
   if (faceMoves.length) report.push("Untertitel an " + faceMoves.length + (faceMoves.length === 1 ? " Stelle" : " Stellen") + " kurz über deinen Kopf gesetzt, weil dein Gesicht dort tiefer im Bild war.");
   style.caption_moves = moves.concat(faceMoves);
   // Logo der Marke laden (nur Bilder, höchstens 3 MB)
+  let musicFile = null; const mus = style.music && typeof style.music === "object" ? style.music : null;
+  if (mus && mus.on) { try { musicFile = path.join(dir, "music.audio"); await download(job.base + "/internal/reels/input/" + job.id + "/music", hdr(job), musicFile); } catch (e) { console.log("Musik", e.message); musicFile = null; } }
   let logoFile = null;
   if (style.logo_on && /^https:\/\//.test(style.logo || "")) {
     try {
@@ -390,7 +394,7 @@ async function renderCore(job) {
   }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
+  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, music: musicFile ? { file: musicFile, vol: { leise: 0.35, mittel: 0.6, kraeftig: 0.9 }[mus.vol] || 0.6 } : null, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
   try { await run("ffmpeg", finalArgs(gradeFull)); }
   catch (e) { if (!extra.length) throw e; console.log("Licht/Haut-Filter fehlgeschlagen, ohne erneut:", e && e.message); await run("ffmpeg", finalArgs(gradeBase)); }
   const thumb = path.join(dir, "final.jpg");

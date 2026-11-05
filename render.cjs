@@ -333,7 +333,7 @@ function endeTexts(style, total) {
 function textEvents(words, map, style) {
   const out = [], acc = hexAss(style.accent || "#E6007E"), lang = style.lang || "de";
   const tk = titelkarteDur(style);
-  const list = (Array.isArray(style.texts) ? style.texts.slice(0, 12) : []).concat(endeTexts(style, map.total)).concat(tk && style.titelkarte.titel ? [{ art: "karte_titel", text: style.titelkarte.titel, y: 66, anim: "einblenden", abs: { start: 0, end: tk } }] : []);
+  const list = (Array.isArray(style.texts) ? style.texts.slice(0, style.mood || style.texts.some(t => t && t.art === "poesie") ? 40 : 12) : []).concat(endeTexts(style, map.total)).concat(tk && style.titelkarte.titel ? [{ art: "karte_titel", text: style.titelkarte.titel, y: 66, anim: "einblenden", abs: { start: 0, end: tk } }] : []);
   const dlg = (t0, t1, sty, mL, mR, tags, txt) => out.push("Dialogue: 2," + assTime(t0) + "," + assTime(t1) + "," + sty + ",," + mL + "," + mR + ",0,,{" + tags + "}" + txt);
   const shape = (t0, t1, kind, x, y, name, col, extra) => dlg(t0, t1, "TxtO", 0, 0, "\\an7" + animTags(kind, x, y) + "\\p1\\bord" + (extra || 0) + "\\shad0\\1c" + col + "\\3c&H141414&", SHAPES[name] + "{\\p0}");
   list.forEach(t => {
@@ -471,6 +471,7 @@ function buildFfmpegArgs(o) {
   if (o.card && o.card.file) { o.cardIdx = nIn++; args.push("-loop", "1", "-t", (o.card.d + 0.1).toFixed(2), "-i", o.card.file); }
   (o.pips || []).forEach(pp => { pp.idx = nIn++; args.push("-t", (pp.d + 0.2).toFixed(2), "-i", pp.file); });
   if (o.loopFrame) { o.loopIdx = nIn++; args.push("-loop", "1", "-t", "0.45", "-i", o.loopFrame); }
+  if (o.music && o.music.file) { o.musicIdx = nIn++; args.push("-stream_loop", "-1", "-i", o.music.file); }
   const sel = o.segs.map(s => "between(t," + s.s.toFixed(3) + "," + s.e.toFixed(3) + ")").join("+");
   const f = [];
   f.push("[0:v]fps=" + FPS + ",scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + (o.cropX != null ? ":'max(0,min(iw-ow,iw*" + Number(o.cropX).toFixed(4) + "-ow/2))':0" : "") + ",setsar=1,select='" + sel + "',setpts=N/" + FPS + "/TB" + (o.grade ? "," + o.grade : "") + "[v0]");
@@ -561,6 +562,12 @@ function buildFfmpegArgs(o) {
     });
     f.push(labels.join("") + "amix=inputs=" + labels.length + ":normalize=0:duration=first[aout]");
     a = "aout";
+  }
+  if (o.music && o.music.file) { // Musik: auf Reel-Länge, sanft ein- und ausblenden, Naturton leiser
+    const T = o.map.total, mv = Math.max(0.05, Math.min(1.2, Number(o.music.vol) || 0.6));
+    f.push("[" + o.musicIdx + ":a]aformat=sample_rates=44100:channel_layouts=stereo,atrim=0:" + T.toFixed(3) + ",asetpts=PTS-STARTPTS,volume=" + mv.toFixed(2) + ",afade=t=in:d=1.2,afade=t=out:st=" + Math.max(0, T - 2.2).toFixed(3) + ":d=2.2[mus]");
+    f.push("[" + a + "]volume=" + (o.music.duck != null ? o.music.duck : 0.45) + "[aduck]");
+    f.push("[aduck][mus]amix=inputs=2:normalize=0:duration=first[amx]"); a = "amx";
   }
   if (o.loopFrame) { f.push("[" + a + "]afade=t=out:st=" + Math.max(0, o.map.total - 0.3).toFixed(3) + ":d=0.3[alp]"); a = "alp"; }
   if (tempo !== 1) { f.push("[" + a + "]atempo=" + tempo.toFixed(3) + "[atp]"); a = "atp"; }

@@ -66,6 +66,8 @@ export default {
       if (p === "/api/reels/stock" && m === "GET") return await routeStock(request, env, url);
       if (p === "/api/reels/broll") return await routeBroll(request, env, url, m);
       if (p === "/api/reels/broll/poster" && m === "POST") return await routeBrollPoster(request, env, url);
+      if (p === "/api/reels/music") return await routeMusic(request, env, url, m);
+      if (p === "/api/reels/music/use" && m === "POST") return await routeMusicUse(request, env);
       if (p === "/api/reels/mood-text" && m === "POST") return await routeMoodText(request, env);
       if (p === "/api/reels/mood" && m === "POST") return await routeMood(request, env, url);
       if (p === "/api/reels/profil" && m === "POST") return await routeProfil(request, env, url);
@@ -744,6 +746,39 @@ async function routeBrollPoster(request, env, url) {
   await env.REELS_BUCKET.put(brollKey(uid, cid, "jpg"), buf, { httpMetadata: { contentType: "image/jpeg" } });
   return json({ ok: true });
 }
+// ---------- Eigene Musik (lizenzfrei, z. B. Pixabay Music) ----------
+const MUSIC_MAX = 30, MUSIC_BYTES = 20 * 1024 * 1024;
+const musicKey = (uid, mid) => keyOf(uid, "music-" + mid + ".audio");
+async function routeMusic(request, env, url, m) {
+  const s = await session(request, env); if (s.err) return s.err; const uid = s.user.id;
+  if (m === "GET") { const list = await env.REELS_BUCKET.list({ prefix: keyOf(uid, "music-"), include: ["customMetadata"], limit: 100 });
+    const out = []; for (const o of (list.objects || []).sort((a, b) => (b.uploaded || 0) - (a.uploaded || 0)).slice(0, MUSIC_MAX)) { const mid = /music-([a-z0-9]+)\.audio$/.exec(o.key); if (!mid) continue; const md = o.customMetadata || {};
+      out.push({ id: mid[1], name: md.name || "Musik", dur: Number(md.dur) || 0, url: await mediaUrl(env, url.origin, uid, "music-" + mid[1] + ".audio") }); }
+    return json({ tracks: out }); }
+  if (m === "DELETE") { const mid = String(url.searchParams.get("id") || ""); if (!/^[a-z0-9]{6,24}$/.test(mid)) return json({ error: "server" }, 400); await env.REELS_BUCKET.delete(musicKey(uid, mid)); return json({ ok: true }); }
+  if (m === "POST") { const type = String(request.headers.get("content-type") || "");
+    if (!/^audio\/(mpeg|mp3|mp4|x-m4a|aac|wav|x-wav|ogg)/.test(type)) return json({ error: "server", detail: "Bitte eine Musikdatei (MP3, M4A, WAV oder OGG)." }, 400);
+    const buf = await request.arrayBuffer(); if (buf.byteLength > MUSIC_BYTES) return json({ error: "server", detail: "Die Datei ist zu groß (höchstens 20 MB)." }, 400);
+    const list = await env.REELS_BUCKET.list({ prefix: keyOf(uid, "music-"), limit: 100 }); if ((list.objects || []).length >= MUSIC_MAX) return json({ error: "server", detail: "Deine Musiksammlung ist voll (" + MUSIC_MAX + " Stücke). Lösche zuerst ein paar." }, 400);
+    const mid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    await env.REELS_BUCKET.put(musicKey(uid, mid), buf, { httpMetadata: { contentType: type.split(";")[0] }, customMetadata: { name: String(url.searchParams.get("name") || "Musik").slice(0, 80), dur: String(Math.max(0, Math.min(1800, Number(url.searchParams.get("dur")) || 0))) } });
+    return json({ ok: true, id: mid }); }
+  return json({ error: "not_found" }, 404);
+}
+// Musik einem Reel zuordnen (kopiert die Datei zum Reel) oder entfernen
+async function attachMusic(env, uid, jobId, mid) {
+  if (!mid) { await env.REELS_BUCKET.delete(keyOf(jobId, "music")); return true; }
+  const obj = await env.REELS_BUCKET.get(musicKey(uid, mid)); if (!obj) return false;
+  await env.REELS_BUCKET.put(keyOf(jobId, "music"), obj.body, { httpMetadata: obj.httpMetadata }); return true;
+}
+async function routeMusicUse(request, env) {
+  const s = await session(request, env); if (s.err) return s.err; const b = await readJson(request) || {};
+  const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+  const mid = b.music ? String(b.music) : ""; if (mid && !/^[a-z0-9]{6,24}$/.test(mid)) return json({ error: "server" }, 400);
+  if (!(await attachMusic(env, s.user.id, j.id, mid))) return json({ error: "server", detail: "Das Musikstück wurde nicht gefunden." }, 404);
+  const st = Object.assign({}, j.style || {}, { music: mid ? { on: true, id: mid, name: String(b.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(b.vol) ? b.vol : "mittel" } : null });
+  await patchJob(env, j.id, { style: sanitizeStyle(st) }); return json({ ok: true, music: st.music });
+}
 function moodSecs(t) { const w = String(t).split(/\s+/).filter(Boolean).length; return Math.max(3.5, Math.min(9, w / 2.4 + 1.6)); }
 function moodSize(t, k) { const n = String(t).length; return Math.round((n > 150 ? 58 : n > 110 ? 64 : n > 70 ? 72 : n > 40 ? 82 : 92) * (k || 1)); }
 async function routeMood(request, env, url) {
@@ -782,6 +817,7 @@ async function routeMood(request, env, url) {
   const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "mood_reel" } });
   const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) { await patchJob(env, job.id, { status: "error", error: "Nicht genug Credits." }); return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402); }
   await patchJob(env, job.id, { input_bytes: bytes });
+  if (b.music && /^[a-z0-9]{6,24}$/.test(String(b.music))) { if (await attachMusic(env, s.user.id, job.id, String(b.music))) await patchJob(env, job.id, { style: sanitizeStyle(Object.assign({}, style, { music: { on: true, id: String(b.music), name: String(b.music_name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(b.music_vol) ? b.music_vol : "mittel" } })) }); }
   try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: used.length, trims, vocab: "", mood: true }); }
   catch (e) { await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
   return json({ ok: true, id: job.id });
@@ -938,7 +974,7 @@ function sanitizeStyle(st) {
     cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, music: st.music && typeof st.music === "object" && st.music.on && /^[a-z0-9]{6,24}$/.test(String(st.music.id || "")) ? { on: true, id: String(st.music.id), name: String(st.music.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(st.music.vol) ? st.music.vol : "mittel" } : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
     filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), agent: sanitizeAgent(st.agent), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
     split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
     titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
@@ -1073,6 +1109,7 @@ async function routeInternal(request, env, url) {
   const parts = url.pathname.split("/"); // ["", "internal", "reels", kind, id, name]
   const kind = parts[3], id = parts[4];
   if (!validId(id) || request.headers.get("x-internal") !== await hmac(env, "internal|" + id)) return new Response("", { status: 403 });
+  if (kind === "input" && request.method === "GET" && parts[5] === "music") return await serveObject(env, keyOf(id, "music"), request);
   if (kind === "input" && request.method === "GET" && /^[2-8]$/.test(parts[5] || "")) return await serveObject(env, keyOf(id, "input" + parts[5]), request);
   if (kind === "output" && request.method === "PUT" && parts[5] === "joined.mp4") { // zusammengefügte Clips ersetzen das Original
     if (!(await env.REELS_BUCKET.head(keyOf(id, "input2")))) return new Response("", { status: 403 });
@@ -1133,10 +1170,11 @@ async function routeInternal(request, env, url) {
     }
     if (b.status === "error") {
       if (b.phase === "render" && Number(j.cutout_credits) > 0) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: Number(j.cutout_credits), p_action: "reel_cutout" } });
-      await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
+      await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length || (j.style && j.style.mood) ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
       if (b.phase === "analyze" && !(j.clips && j.clips.source_id && !j.clips.charged)) {
-        const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
-        await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: cost && cost[0] ? Number(cost[0].credits) : 30, p_action: "reel_edit" } });
+        const act = j.style && j.style.mood ? "mood_reel" : "reel_edit"; // Text-Reels kosten 5, normale Reels 30
+        const cost = await db(env, "action_costs?action=eq." + act + "&select=credits");
+        await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: cost && cost[0] ? Number(cost[0].credits) : (act === "mood_reel" ? 5 : 30), p_action: act } });
       }
       return new Response("ok");
     }
