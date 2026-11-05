@@ -525,7 +525,7 @@ function buildFfmpegArgs(o) {
   const fxBase = logoIdx + (o.logo ? 1 : 0) + unders.length;
   if (o.logo) { // Logo klein oben links, innerhalb der Sicherheitszone
     f.push("[" + logoIdx + ":v]scale=150:150:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=aa=0.92[lg]");
-    f.push("[" + v + "][lg]overlay=x=48:y=236[vlg]"); v = "vlg";
+    f.push("[" + v + "][lg]" + (o.logoPos === "unten" ? "overlay=x=(main_w-overlay_w)/2:y=1920-overlay_h-390" : "overlay=x=48:y=236") + "[vlg]"); v = "vlg";
   }
   fxs.forEach((fx, i) => {
     if (fx.gif) { // GIF als Karte mit weißem Rand, sanft ein- und ausgeblendet, mittig über dem Platz
