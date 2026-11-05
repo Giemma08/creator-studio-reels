@@ -678,7 +678,7 @@ async function routeStock(request, env, url) {
         const pick = sizes.filter(x => Math.max(x.width, x.height) >= 1000 && Math.max(x.width, x.height) <= 2000)[0] || sizes[0]; const prev = v.tiny && v.tiny.url ? v.tiny : (v.small || pick);
         if (!pick) return null; const poster = (prev && prev.thumbnail) || (pick && pick.thumbnail) || "";
         return { id: "px" + h.id, dur: h.duration, url: pick.url, preview: prev && prev.url, poster, by: h.user || "", page: h.pageURL, portrait: pick.height >= pick.width }; }).filter(Boolean)
-      .sort((a, b) => (b.portrait ? 1 : 0) - (a.portrait ? 1 : 0)).slice(0, 18);
+      .sort((a, b) => ((b.portrait ? 1 : 0) - (a.portrait ? 1 : 0)) || ((a.dur > 25 ? 1 : 0) - (b.dur > 25 ? 1 : 0)) || (a.dur - b.dur)).slice(0, 24);
     return json({ videos: vids, source: "Pixabay" });
   }
   try { r = await fetch("https://api.pexels.com/videos/search?orientation=portrait&size=medium&per_page=15&page=" + page + "&query=" + encodeURIComponent(q), { headers: { Authorization: String(env.PEXELS_API_KEY).trim() }, signal: AbortSignal.timeout(15000) }); }
@@ -713,7 +713,7 @@ async function routeMood(request, env, url) {
   const b = await readJson(request) || {}; const strom = b.variante !== "satz";
   const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().replace(/^(?:[*•·\-–—]|\d+[.)])\s+/, "").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 16 : 1);
   if (!lines.length) return json({ error: "server", detail: "Bitte schreib zuerst den Text." }, 400);
-  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*(pexels\.com|pixabay\.com)\//i.test(String(c.url || ""))).slice(0, 4).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
+  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*(pexels\.com|pixabay\.com)\//i.test(String(c.url || ""))).slice(0, 8).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
   if (!clips.length) return json({ error: "server", detail: "Bitte wähl mindestens ein Video." }, 400);
   // Zeitplan: Gedankenstrom = jeder Abschnitt seine Zeit, Bilder wechseln mit den Gedanken; Ein Satz = eine Aussage über das ganze Reel
   const secs = strom ? lines.map(moodSecs) : [Math.max(7, Math.min(15, moodSecs(lines[0]) + 3.5))];
@@ -730,7 +730,7 @@ async function routeMood(request, env, url) {
       texts.push({ id: "m" + i + Date.now().toString(36), art: "poesie", text: l, von: 0, at: Math.round((t + 0.3) * 100) / 100, dur: Math.round(Math.max(1.5, share - 0.5) * 100) / 100, anim: "einblenden", y: 40, font: CAP_FONTS.includes(b.font) ? b.font : undefined, size: moodSize(l) }); t += share; }); }
   else { const total = trims.reduce((a, x) => a + x, 0); texts.push({ id: "m0" + Date.now().toString(36), art: "poesie", text: lines[0], von: 0, at: 0.5, dur: Math.round(Math.max(3, total - 0.9) * 100) / 100, anim: "einblenden", y: 40, font: CAP_FONTS.includes(b.font) ? b.font : undefined, size: moodSize(lines[0]) }); }
   const prefs = await readPrefs(env, s.user.id);
-  const style = sanitizeStyle(Object.assign({}, prefs.style || {}, { captions: false, texts, caption: String(b.caption || "").slice(0, 2200), hashtags: Array.isArray(b.hashtags) ? b.hashtags : [] }));
+  const style = sanitizeStyle(Object.assign({}, prefs.style || {}, { captions: false, hook: false, mood: true, texts, caption: String(b.caption || "").slice(0, 2200), hashtags: Array.isArray(b.hashtags) ? b.hashtags : [] }));
   const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: ("🌿 " + lines[0]).slice(0, 120), status: "analyzing", kind: "reel", input_bytes: 0, style } });
   const job = rows && rows[0]; if (!job) return json({ error: "server" }, 500);
   let bytes = 0;
@@ -739,7 +739,7 @@ async function routeMood(request, env, url) {
   const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "mood_reel" } });
   const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) { await patchJob(env, job.id, { status: "error", error: "Nicht genug Credits." }); return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402); }
   await patchJob(env, job.id, { input_bytes: bytes });
-  try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: used.length, trims, vocab: "" }); }
+  try { await startContainer(env, url.origin, job, "analyze", { openai_key: env.OPENAI_API_KEY, model: await modelFor(env, "fast"), lang: s.acc.content_lang || "de", max_seconds: 185, clips: used.length, trims, vocab: "", mood: true }); }
   catch (e) { await patchJob(env, job.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
   return json({ ok: true, id: job.id });
 }
@@ -1029,11 +1029,11 @@ async function routeInternal(request, env, url) {
   const parts = url.pathname.split("/"); // ["", "internal", "reels", kind, id, name]
   const kind = parts[3], id = parts[4];
   if (!validId(id) || request.headers.get("x-internal") !== await hmac(env, "internal|" + id)) return new Response("", { status: 403 });
-  if (kind === "input" && request.method === "GET" && /^[2-6]$/.test(parts[5] || "")) return await serveObject(env, keyOf(id, "input" + parts[5]), request);
+  if (kind === "input" && request.method === "GET" && /^[2-8]$/.test(parts[5] || "")) return await serveObject(env, keyOf(id, "input" + parts[5]), request);
   if (kind === "output" && request.method === "PUT" && parts[5] === "joined.mp4") { // zusammengefügte Clips ersetzen das Original
     if (!(await env.REELS_BUCKET.head(keyOf(id, "input2")))) return new Response("", { status: 403 });
     await env.REELS_BUCKET.put(keyOf(id, "input"), request.body, { httpMetadata: { contentType: "video/mp4" } });
-    for (let k = 2; k <= 6; k++) await env.REELS_BUCKET.delete(keyOf(id, "input" + k));
+    for (let k = 2; k <= 8; k++) await env.REELS_BUCKET.delete(keyOf(id, "input" + k));
     return new Response("ok");
   }
   if (kind === "input" && request.method === "GET") {

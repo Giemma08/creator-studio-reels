@@ -51,7 +51,7 @@ async function probe(file) {
 
 // Mehrere Clips (2.15): alle laden, auf 1080 × 1920 bringen, aneinanderhängen und als neues Original hochladen
 async function joinClips(job, dir) {
-  const n = Math.max(Array.isArray(job.trims) && job.trims.length ? 1 : 2, Math.min(6, Number(job.clips) || 2)), files = [];
+  const n = Math.max(Array.isArray(job.trims) && job.trims.length ? 1 : 2, Math.min(8, Number(job.clips) || 2)), files = [];
   for (let k = 1; k <= n; k++) { const f = path.join(dir, "clip" + k); await download(job.base + "/internal/reels/input/" + job.id + (k > 1 ? "/" + k : ""), hdr(job), f); files.push(f); }
   const args = ["-y", "-loglevel", "error"], f = [];
   const infos = [];
@@ -151,7 +151,7 @@ async function analyze(job) {
   let words = [];
   const given = job.clip && info.hasAudio ? clipWords(job.clip) : null; // 1.1: Wörter aus dem langen Video wiederverwenden
   if (given) words = given;
-  else if (info.hasAudio) {
+  else if (info.hasAudio && !job.mood) { // Stimmungs-Reel: Naturton nicht abschreiben (sonst erfindet die Spracherkennung Text)
     const audio = path.join(dir, "audio.mp3");
     await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", audio]);
     const fd = new FormData();
