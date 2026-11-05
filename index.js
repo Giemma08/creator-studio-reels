@@ -688,7 +688,7 @@ function moodSize(t) { const n = String(t).length; return n > 150 ? 58 : n > 110
 async function routeMood(request, env, url) {
   const s = await session(request, env); if (s.err) return s.err;
   const b = await readJson(request) || {}; const strom = b.variante !== "satz";
-  const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 6 : 1);
+  const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().replace(/^(?:[*•·\-–—]|\d+[.)])\s+/, "").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 16 : 1);
   if (!lines.length) return json({ error: "server", detail: "Bitte schreib zuerst den Text." }, 400);
   const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*pexels\.com\//i.test(String(c.url || ""))).slice(0, 4).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
   if (!clips.length) return json({ error: "server", detail: "Bitte wähl mindestens ein Video." }, 400);
