@@ -64,6 +64,8 @@ export default {
       if (p === "/api/reels/pip" && m === "PUT") return await routePip(request, env, url);
       if (p === "/api/reels/caption" && m === "POST") return await routeCaption(request, env);
       if (p === "/api/reels/stock" && m === "GET") return await routeStock(request, env, url);
+      if (p === "/api/reels/broll") return await routeBroll(request, env, url, m);
+      if (p === "/api/reels/broll/poster" && m === "POST") return await routeBrollPoster(request, env, url);
       if (p === "/api/reels/mood-text" && m === "POST") return await routeMoodText(request, env);
       if (p === "/api/reels/mood" && m === "POST") return await routeMood(request, env, url);
       if (p === "/api/reels/profil" && m === "POST") return await routeProfil(request, env, url);
@@ -706,6 +708,42 @@ async function routeMoodText(request, env) {
   if (!ab.length) return json({ error: "empty_reply" }, 502);
   return json({ abschnitte: ab, caption: String(d.caption || "").slice(0, 2200), hashtags: (Array.isArray(d.hashtags) ? d.hashtags : []).map(h => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).slice(0, 10), suche: (Array.isArray(d.suche) ? d.suche : []).map(x => String(x).slice(0, 40)).slice(0, 3), credits: r.credits });
 }
+// ---------- Eigene Clips (B-Roll) für Stimmungs-Reels ----------
+const BROLL_MAX = 40, BROLL_BYTES = 95 * 1024 * 1024;
+const brollKey = (uid, cid, ext) => keyOf(uid, "broll-" + cid + "." + ext);
+async function routeBroll(request, env, url, m) {
+  const s = await session(request, env); if (s.err) return s.err; const uid = s.user.id;
+  if (m === "GET") {
+    const list = await env.REELS_BUCKET.list({ prefix: keyOf(uid, "broll-"), include: ["customMetadata"], limit: 200 });
+    const jpgs = new Set((list.objects || []).filter(o => /\.jpg$/.test(o.key)).map(o => o.key));
+    const vids = (list.objects || []).filter(o => /\.mp4$/.test(o.key)).sort((a, b) => (b.uploaded || 0) - (a.uploaded || 0)).slice(0, BROLL_MAX);
+    const clips = []; for (const o of vids) { const cid = /broll-([a-z0-9]+)\.mp4$/.exec(o.key)[1], md = o.customMetadata || {};
+      clips.push({ id: "b" + cid, broll: cid, dur: Number(md.dur) || 10, name: md.name || "", url: await mediaUrl(env, url.origin, uid, "broll-" + cid + ".mp4"), preview: await mediaUrl(env, url.origin, uid, "broll-" + cid + ".mp4"), poster: jpgs.has(brollKey(uid, cid, "jpg")) ? await mediaUrl(env, url.origin, uid, "broll-" + cid + ".jpg") : "", portrait: Number(md.h) >= Number(md.w), own: true }); }
+    return json({ clips });
+  }
+  if (m === "DELETE") { const cid = String(url.searchParams.get("id") || ""); if (!/^[a-z0-9]{6,24}$/.test(cid)) return json({ error: "server" }, 400);
+    await env.REELS_BUCKET.delete(brollKey(uid, cid, "mp4")); await env.REELS_BUCKET.delete(brollKey(uid, cid, "jpg")); return json({ ok: true }); }
+  if (m === "POST") {
+    const type = String(request.headers.get("content-type") || ""), size = Number(request.headers.get("content-length") || 0);
+    if (!/^video\/(mp4|quicktime|webm|x-m4v)/.test(type)) return json({ error: "server", detail: "Bitte ein Video (MP4, MOV oder WebM)." }, 400);
+    if (size > BROLL_BYTES) return json({ error: "server", detail: "Das Video ist zu groß (höchstens 95 MB). Kürze es oder speichere es kleiner." }, 400);
+    const list = await env.REELS_BUCKET.list({ prefix: keyOf(uid, "broll-"), limit: 200 }); if ((list.objects || []).filter(o => /\.mp4$/.test(o.key)).length >= BROLL_MAX) return json({ error: "server", detail: "Deine Clip-Sammlung ist voll (" + BROLL_MAX + " Clips). Lösche zuerst ein paar." }, 400);
+    const cid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const md = { dur: String(Math.max(1, Math.min(600, Number(url.searchParams.get("dur")) || 10))), name: String(url.searchParams.get("name") || "").slice(0, 80), w: String(Number(url.searchParams.get("w")) || 0), h: String(Number(url.searchParams.get("h")) || 0) };
+    const buf = await request.arrayBuffer(); if (buf.byteLength > BROLL_BYTES) return json({ error: "server", detail: "Das Video ist zu groß (höchstens 95 MB)." }, 400);
+    await env.REELS_BUCKET.put(brollKey(uid, cid, "mp4"), buf, { httpMetadata: { contentType: type.split(";")[0] }, customMetadata: md });
+    return json({ ok: true, id: cid });
+  }
+  return json({ error: "not_found" }, 404);
+}
+async function routeBrollPoster(request, env, url) {
+  const s = await session(request, env); if (s.err) return s.err; const uid = s.user.id, cid = String(url.searchParams.get("id") || "");
+  if (!/^[a-z0-9]{6,24}$/.test(cid)) return json({ error: "server" }, 400);
+  const head = await env.REELS_BUCKET.head(brollKey(uid, cid, "mp4")); if (!head) return json({ error: "not_found" }, 404);
+  const buf = await request.arrayBuffer(); if (buf.byteLength > 600000) return json({ error: "server" }, 400);
+  await env.REELS_BUCKET.put(brollKey(uid, cid, "jpg"), buf, { httpMetadata: { contentType: "image/jpeg" } });
+  return json({ ok: true });
+}
 function moodSecs(t) { const w = String(t).split(/\s+/).filter(Boolean).length; return Math.max(3.5, Math.min(9, w / 2.4 + 1.6)); }
 function moodSize(t, k) { const n = String(t).length; return Math.round((n > 150 ? 58 : n > 110 ? 64 : n > 70 ? 72 : n > 40 ? 82 : 92) * (k || 1)); }
 async function routeMood(request, env, url) {
@@ -713,7 +751,7 @@ async function routeMood(request, env, url) {
   const b = await readJson(request) || {}; const strom = b.variante !== "satz";
   const lines = (Array.isArray(b.abschnitte) ? b.abschnitte : []).map(x => String(x || "").replace(/[\u0000-\u001f]/g, " ").trim().replace(/^(?:[*•·\-–—]|\d+[.)])\s+/, "").trim().slice(0, 240)).filter(Boolean).slice(0, strom ? 16 : 1);
   if (!lines.length) return json({ error: "server", detail: "Bitte schreib zuerst den Text." }, 400);
-  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && /^https:\/\/([a-z0-9-]+\.)*(pexels\.com|pixabay\.com)\//i.test(String(c.url || ""))).slice(0, 8).map(c => ({ url: String(c.url), dur: Math.max(1, Number(c.dur) || 10) }));
+  const clips = (Array.isArray(b.clips) ? b.clips : []).filter(c => c && (/^[a-z0-9]{6,24}$/.test(String(c.broll || "")) || /^https:\/\/([a-z0-9-]+\.)*(pexels\.com|pixabay\.com)\//i.test(String(c.url || "")))).slice(0, 8).map(c => ({ url: String(c.url || ""), broll: c.broll ? String(c.broll) : "", dur: Math.max(1, Number(c.dur) || 10) }));
   if (!clips.length) return json({ error: "server", detail: "Bitte wähl mindestens ein Video." }, 400);
   // Zeitplan: Gedankenstrom = jeder Abschnitt seine Zeit, Bilder wechseln mit den Gedanken; Ein Satz = eine Aussage über das ganze Reel
   const secs = strom ? lines.map(moodSecs) : [Math.max(7, Math.min(15, moodSecs(lines[0]) + 3.5))];
@@ -737,7 +775,9 @@ async function routeMood(request, env, url) {
   const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: ("🌿 " + lines[0]).slice(0, 120), status: "analyzing", kind: "reel", input_bytes: 0, style } });
   const job = rows && rows[0]; if (!job) return json({ error: "server" }, 500);
   let bytes = 0;
-  try { for (let k = 0; k < used.length; k++) { const r = await fetch(used[k].url); if (!r.ok) throw new Error("clip " + r.status); const buf = await r.arrayBuffer(); bytes += buf.byteLength; await env.REELS_BUCKET.put(keyOf(job.id, k ? "input" + (k + 1) : "input"), buf, { httpMetadata: { contentType: "video/mp4" } }); } }
+  try { for (let k = 0; k < used.length; k++) { const dest = keyOf(job.id, k ? "input" + (k + 1) : "input");
+      if (used[k].broll) { const obj = await env.REELS_BUCKET.get(brollKey(s.user.id, used[k].broll, "mp4")); if (!obj) throw new Error("broll fehlt"); bytes += obj.size; await env.REELS_BUCKET.put(dest, obj.body, { httpMetadata: { contentType: (obj.httpMetadata && obj.httpMetadata.contentType) || "video/mp4" } }); continue; }
+      const r = await fetch(used[k].url); if (!r.ok) throw new Error("clip " + r.status); const buf = await r.arrayBuffer(); bytes += buf.byteLength; await env.REELS_BUCKET.put(dest, buf, { httpMetadata: { contentType: "video/mp4" } }); } }
   catch (e) { await patchJob(env, job.id, { status: "error", error: "Ein Video konnte nicht geladen werden. Bitte wähl ein anderes." }); return json({ error: "server", detail: "Ein Video konnte nicht geladen werden. Bitte wähl ein anderes." }, 502); }
   const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: need, p_action: "mood_reel" } });
   const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) { await patchJob(env, job.id, { status: "error", error: "Nicht genug Credits." }); return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402); }
