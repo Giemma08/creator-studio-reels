@@ -1149,7 +1149,12 @@ async function routeInternal(request, env, url) {
       if (b.status === "error" && SRC_ERR[se]) { await patchJob(env, id, { status: "error", error: SRC_ERR[se] }); return new Response("ok"); }
       if (b.status === "error") { await patchJob(env, id, { status: "error", error: b.error === "too_long" ? "Das Video ist länger, als dein Tarif erlaubt (Start 30 Minuten, Standard 1 Stunde 15, Pro 2,5 Stunden)." : String(b.error || "").slice(0, 300) }); return new Response("ok"); }
       const mins = Math.max(1, Math.ceil((Number(b.processed) || Number(b.duration) || 0) / 60));
-      const items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 15);
+      let items = (Array.isArray(b.clips) ? b.clips : []).slice(0, 15);
+      const wl = Array.isArray(b.words) ? b.words : [];
+      // Kurzes Video oder keine eigenständigen Stellen: das ganze Gesprochene als ein Clip vorschlagen
+      if (!items.length && wl.length >= 8) { const st = Math.max(0, Number(wl[0][1]) - 0.2), en = Number(wl[wl.length - 1][2]) + 0.3;
+        if (en - st >= 5) items = [{ key: "ganz" + Math.random().toString(36).slice(2, 6), start: st, end: Math.min(en, st + 180), titel: "Ganzes Video", hook: "", warum: "Dein Video ist kurz, deshalb schlage ich es als ein Reel vor. Du kannst Anfang und Ende anpassen oder durch Ziehen über die Wörter eigene Clips markieren.", typ: "wissen", score: 60 }]; }
+      if (!items.length && wl.length < 8) { await patchJob(env, id, { status: "error", duration: Number(b.duration) || 0, error: "In diesem Video habe ich keine Sprache erkannt. Für Videos ohne Sprechen nimm „Text-Reel mit B-Roll“ (eigene Clips hochladen), für ein kurzes Video, das schon ein fertiges Reel ist, „Reel bearbeiten“." }); return new Response("ok"); }
       await patchJob(env, id, { status: items.length ? "clips_ready" : "error", duration: Number(b.duration) || 0, clips: { sentences: (b.sentences || []).slice(0, 4000), words: (Array.isArray(b.words) ? b.words : []).slice(0, 40000), items: items.map(clipItem).filter(Boolean) }, error: items.length ? null : "In diesem Video habe ich keine Stellen gefunden, die als eigenes Reel funktionieren. Am besten eignen sich Videos, in denen du frei sprichst." });
       const cost = await db(env, "action_costs?action=eq.clips_min&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 2;
       try { await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: j.user_id, p_amount: mins * per, p_action: "clips_min", p_note: mins + " Minuten" } }); } catch (e) {}
