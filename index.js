@@ -322,7 +322,7 @@ async function routeClipsMake(request, env, url) {
   const span = v => v && typeof v === "object" && Number(v.end) - Number(v.start) >= 0.5 ? { start: Math.max(0, Number(v.start) || 0), end: Math.min(dur || 1e9, Number(v.end) || 0) } : null;
   const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 15).map(p => { const v = span(p.vorne); return { agent: sanitizeAgent(p.agent), key: String(p.key || "").slice(0, 40), start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120), vorne: v && (v.end <= Number(p.start) || v.start >= Number(p.end)) ? v : null }; })
     .filter(p => { const len = p.end - p.start + (p.vorne ? p.vorne.end - p.vorne.start : 0); return p.end - p.start >= 3 && len >= 5 && len <= 180; });
-  const layout = b.layout === "geteilt" ? "geteilt" : "folgen", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
+  const layout = ["geteilt", "ganz", "folie", "folgen"].includes(b.layout) ? b.layout : "auto", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
   const wordsIn = sp => W.filter(x => Number(x[1]) >= sp.start - 0.1 && Number(x[2]) <= sp.end + 0.1);
   const vocab = ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), keys = {};
   if (!picks.length) return json({ error: "server" }, 400);

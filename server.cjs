@@ -575,6 +575,20 @@ function clipWords(c) {
 }
 function speakerCrop(sp, w, h, layout) {
   const even = v => Math.max(2, Math.round(v / 2) * 2), P = sp && Array.isArray(sp.persons) ? sp.persons : [];
+  // Ganzes Bild: Querformat vollständig zeigen, darunter unscharfer Hintergrund (ideal für Folien und Bildschirmfreigaben)
+  const fit = ["-filter_complex", "[0:v]split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.12[b];[fg]scale=1080:-2,setsar=1[f];[b][f]overlay=(W-w)/2:(H-h)/2-200,setsar=1[v]", "-map", "[v]", "-map", "0:a?"];
+  // Automatisch: anhand der erkannten Gesichter entscheiden
+  if (!layout || layout === "auto") { const ps = P.slice().sort((a, b) => b.n - a.n), top = ps[0], sec = ps[1];
+    if (!top) layout = "ganz";
+    else if (sec && sec.n >= top.n * 0.5 && top.s >= 0.12 && sec.s >= 0.12 && Math.abs(top.x - sec.x) > 0.25) layout = "geteilt"; // Galerie mit zwei Personen
+    else if (top.s < 0.15) layout = "folie"; // kleines Gesicht neben einer Bildschirmfreigabe oder Folie
+    else layout = "folgen";
+    console.log("Layout automatisch:", layout, JSON.stringify(ps.map(p => ({ s: +p.s.toFixed(3), x: +p.x.toFixed(2), n: p.n })))); }
+  if (layout === "ganz" || (!P.length && layout !== "geteilt")) return fit;
+  // Folie oben, Gesicht unten: ganze Bildschirmfreigabe oben, Ausschnitt um die Sprecherin darunter
+  if (layout === "folie") { if (!P.length) return fit; const p = P.slice().sort((a, b) => b.n - a.n)[0];
+    const ch = even(Math.min(h, Math.max(h * 0.25, p.s * h * 4))), cw2 = even(Math.min(w, ch * 1080 / 1312)), x = Math.round(Math.max(0, Math.min(w - cw2, p.x * w - cw2 / 2))), y = Math.round(Math.max(0, Math.min(h - ch, p.y * h - ch * 0.42)));
+    return ["-filter_complex", "[0:v]split=2[a][b];[a]scale=1080:608:force_original_aspect_ratio=decrease,pad=1080:608:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[t];[b]crop=" + cw2 + ":" + ch + ":" + x + ":" + y + ",scale=1080:1312,setsar=1[u];[t][u]vstack[v]", "-map", "[v]", "-map", "0:a?"]; }
   const cw = even(Math.min(w, h * 9 / 16)), cx = x => Math.round(Math.max(0, Math.min(w - cw, x * w - cw / 2)));
   if (layout === "geteilt" && P.length >= 2) {
     const two = P.slice().sort((a, b) => b.n - a.n).slice(0, 2).sort((a, b) => a.x - b.x);
