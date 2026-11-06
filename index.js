@@ -1016,7 +1016,14 @@ async function routeRender(request, env, url) {
   const moodJob = !!(j.style && (j.style.mood || (j.style.texts || []).some(t => t && t.art === "poesie")));
   // Entwurf aus langem Video: Hängt die Vorbereitung (Titel, Zooms, Töne) länger als 90 Sekunden, trotzdem erstellen, die Wörter sind ja da
   const age = Date.now() - new Date(j.updated_at || j.created_at || 0).getTime();
-  if (j.status === "analyzing" && j.clips && j.clips.draft && (j.words || []).length && age > 90000) { j.status = "ready"; await patchJob(env, j.id, { status: "ready" }); }
+  if (j.status === "analyzing" && j.clips && j.clips.draft && age > 90000) {
+    // Vorbereitung hängt (z. B. Neustart der Werkstatt): Wörter direkt aus dem langen Video übernehmen und freigeben
+    let ws = j.words || [];
+    if (!ws.length && j.clips.source_id) { const src = await getJob(env, s, j.clips.source_id); const W = (src && src.clips && src.clips.words) || [], c = j.clips.clip || {};
+      const parts = Array.isArray(c.teile) && c.teile.length ? c.teile : [{ start: c.start, end: c.end }];
+      ws = []; parts.forEach(sp => W.forEach(x => { if (Number(x[1]) >= Number(sp.start) - 0.1 && Number(x[2]) <= Number(sp.end) + 0.1) ws.push({ w: String(x[0]), s: Number(x[1]), e: Number(x[2]) }); })); }
+    if (ws.length) { j.status = "ready"; j.words = sanitizeWords(ws); await patchJob(env, j.id, { status: "ready", words: j.words, has_audio: true }); } }
+  if (j.status === "analyzing" && j.clips && j.clips.draft) return json({ error: "busy", detail: "Der Entwurf wird noch vorbereitet (Titel, Zooms, Töne). Bitte warte noch " + Math.max(10, Math.round((90000 - age) / 1000)) + " Sekunden und klick dann noch einmal." }, 409);
   // Ein Erstellen, das seit über 6 Minuten keine Rückmeldung gibt, gilt als abgebrochen (z. B. Neustart der Werkstatt)
   if (j.status === "rendering" && age > 6 * 60000) { j.status = (j.words || []).length || moodJob ? "ready" : "error"; j.renders = Math.max(0, (Number(j.renders) || 1) - 1); await patchJob(env, j.id, { status: j.status, renders: j.renders }); }
   if (!["ready", "done", "error"].includes(j.status) || !(j.words || []).length && j.has_audio && !moodJob) return json({ error: "busy" }, 409);
