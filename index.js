@@ -1014,6 +1014,11 @@ async function routeRender(request, env, url) {
   const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
   if (j && j.input_deleted) return json({ error: "input_deleted" }, 410);
   const moodJob = !!(j.style && (j.style.mood || (j.style.texts || []).some(t => t && t.art === "poesie")));
+  // Entwurf aus langem Video: Hängt die Vorbereitung (Titel, Zooms, Töne) länger als 90 Sekunden, trotzdem erstellen, die Wörter sind ja da
+  const age = Date.now() - new Date(j.updated_at || j.created_at || 0).getTime();
+  if (j.status === "analyzing" && j.clips && j.clips.draft && (j.words || []).length && age > 90000) { j.status = "ready"; await patchJob(env, j.id, { status: "ready" }); }
+  // Ein Erstellen, das seit über 6 Minuten keine Rückmeldung gibt, gilt als abgebrochen (z. B. Neustart der Werkstatt)
+  if (j.status === "rendering" && age > 6 * 60000) { j.status = (j.words || []).length || moodJob ? "ready" : "error"; j.renders = Math.max(0, (Number(j.renders) || 1) - 1); await patchJob(env, j.id, { status: j.status, renders: j.renders }); }
   if (!["ready", "done", "error"].includes(j.status) || !(j.words || []).length && j.has_audio && !moodJob) return json({ error: "busy" }, 409);
   let credits = null;
   if (j.renders >= 3) {
