@@ -1180,7 +1180,7 @@ async function routeInternal(request, env, url) {
     }
     if (b.status === "error") {
       if (b.phase === "render" && Number(j.cutout_credits) > 0) await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: Number(j.cutout_credits), p_action: "reel_cutout" } });
-      await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length || (j.style && j.style.mood) ? "ready" : "error"), error: String(b.error || "").slice(0, 300) });
+      await patchJob(env, id, { status: b.phase === "analyze" ? "error" : (j.words && j.words.length || (j.style && j.style.mood) ? "ready" : "error"), error: (String(b.error || "").trim() || "Die Werkstatt hat ohne Meldung abgebrochen (" + (b.phase || "render") + ")").slice(0, 300) });
       if (b.phase === "analyze" && !(j.clips && j.clips.source_id && !j.clips.charged)) {
         const act = j.style && j.style.mood ? "mood_reel" : "reel_edit"; // Text-Reels kosten 5, normale Reels 30
         const cost = await db(env, "action_costs?action=eq." + act + "&select=credits");
