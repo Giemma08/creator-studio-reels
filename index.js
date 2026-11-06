@@ -322,7 +322,7 @@ async function routeClipsMake(request, env, url) {
   const span = v => v && typeof v === "object" && Number(v.end) - Number(v.start) >= 0.5 ? { start: Math.max(0, Number(v.start) || 0), end: Math.min(dur || 1e9, Number(v.end) || 0) } : null;
   const picks = (Array.isArray(b.picks) ? b.picks : []).slice(0, 15).map(p => { const v = span(p.vorne); return { agent: sanitizeAgent(p.agent), key: String(p.key || "").slice(0, 40), start: Math.max(0, Number(p.start) || 0), end: Math.min(dur || 1e9, Number(p.end) || 0), titel: String(p.titel || "").slice(0, 120), vorne: v && (v.end <= Number(p.start) || v.start >= Number(p.end)) ? v : null }; })
     .filter(p => { const len = p.end - p.start + (p.vorne ? p.vorne.end - p.vorne.start : 0); return p.end - p.start >= 3 && len >= 5 && len <= 180; });
-  const layout = ["geteilt", "ganz", "folie", "folgen"].includes(b.layout) ? b.layout : "auto", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
+  const layout = ["geteilt", "ganz", "folie", "gesicht", "folgen"].includes(b.layout) ? b.layout : "auto", retakes = b.retakes !== false, W = (src.clips && src.clips.words) || [];
   const wordsIn = sp => W.filter(x => Number(x[1]) >= sp.start - 0.1 && Number(x[2]) <= sp.end + 0.1);
   const vocab = ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), keys = {};
   if (!picks.length) return json({ error: "server" }, 400);
@@ -974,7 +974,7 @@ function sanitizeStyle(st) {
     cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, music: st.music && typeof st.music === "object" && st.music.on && /^[a-z0-9]{6,24}$/.test(String(st.music.id || "")) ? { on: true, id: String(st.music.id), name: String(st.music.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(st.music.vol) ? st.music.vol : "mittel" } : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, frame: sanitizeFrame(st.frame), music: st.music && typeof st.music === "object" && st.music.on && /^[a-z0-9]{6,24}$/.test(String(st.music.id || "")) ? { on: true, id: String(st.music.id), name: String(st.music.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(st.music.vol) ? st.music.vol : "mittel" } : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
     filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), agent: sanitizeAgent(st.agent), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
     split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
     titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
@@ -983,6 +983,14 @@ function sanitizeStyle(st) {
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 
+function sanitizeFrame(f) {
+  if (!f || typeof f !== "object" || !["folie", "gesicht", "ganz", "folgen", "geteilt"].includes(f.layout)) return undefined;
+  const n = v => Math.max(0, Math.round(Number(v) || 0)), o = { layout: f.layout, w: n(f.w), h: n(f.h) }; if (!o.w || !o.h) return undefined;
+  if (f.tile && typeof f.tile === "object") o.tile = { x: n(f.tile.x), y: n(f.tile.y), cw: n(f.tile.cw), ch: n(f.tile.ch) };
+  if (f.cw != null) { o.cw = n(f.cw); o.cx = n(f.cx); }
+  if (Array.isArray(f.two)) o.two = f.two.slice(0, 2).map(p => ({ x: +Number(p.x || 0).toFixed(3), y: +Number(p.y || 0).toFixed(3), s: +Number(p.s || 0).toFixed(3) }));
+  return o;
+}
 function sanitizeWords(words, max) {
   return (Array.isArray(words) ? words : []).slice(0, 3000).map(w => {
     const o = { w: String(w.w || "").slice(0, 60), s: Number(w.s) || 0, e: Number(w.e) || 0 };
@@ -1200,7 +1208,8 @@ async function routeInternal(request, env, url) {
     }
     if (b.phase === "analyze") {
       await patchJob(env, id, { status: "ready", duration: Number(b.duration) || 0, has_audio: !!b.has_audio, words: sanitizeWords(b.words), hook_titel: String(b.hook_titel || "").slice(0, 120), bild_ideen: Array.isArray(b.bild_ideen) ? b.bild_ideen.slice(0, 5) : [],
-        style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: await preselectGifs(env, b.effekte || []) })) });
+        style: sanitizeStyle(Object.assign({}, j && j.style || {}, { effects: await preselectGifs(env, b.effekte || []) }, b.frame ? { frame: b.frame } : {},
+          b.frame && (b.frame.layout === "gesicht" || b.frame.layout === "folie") ? { position: "frei", cap_y: b.frame.layout === "gesicht" ? 59.6 : 44.6, hook_pos: "oben" } : {})) });
       // Kosten protokollieren: Transkription + Schnittplan + Rechenzeit
       const rate = await usdEur(env);
       const mins = b.draft ? 0 : (Number(b.duration) || 0) / 60, u = b.usage || {};

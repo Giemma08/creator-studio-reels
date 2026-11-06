@@ -251,7 +251,8 @@ async function render(job) { const r = await renderCore(job); if (job.__moved) r
 async function renderCore(job) {
   const dir = path.join(WORK, job.id); fs.mkdirSync(dir, { recursive: true });
   let input;
-  if (job.draft && job.clip) { input = await cutClip(job, dir); job.words = job.__moved = shiftWords(job.words || [], job.clip); }
+  if (job.draft && job.clip) { input = await cutClip(job, dir); job.words = job.__moved = shiftWords(job.words || [], job.clip);
+    const fl = job.__frame && job.__frame.layout; if ((fl === "gesicht" || fl === "folie") && job.style && job.style.position !== "frei") job.style = Object.assign({}, job.style, { position: "frei", cap_y: fl === "gesicht" ? 59.6 : 44.6, hook_pos: "oben" }); }
   else input = await getInput(job, dir);
   const info = await probe(input);
   const words = (job.words || []).map(w => Object.assign({}, w));
@@ -409,7 +410,7 @@ async function renderCore(job) {
     await run("python3", [path.join(__dirname, "sheet.py"), out, sheet, ts.sort((a, b) => a - b).slice(0, 6).map(x => Math.max(0, Math.min(T - 0.1, x)).toFixed(2)).join(",")]);
     await upload(job.base + "/internal/reels/output/" + job.id + "/check.jpg", hdr(job), sheet, "image/jpeg");
   } catch (e) { console.log("Kontrollbild übersprungen", e.message); }
-  return { status: "done", length: map.total / Math.max(1, Number(style.tempo) || 1), effects_used: effects.length + underlays.length, cutout_failed: cutoutFailed, report: report.slice(0, 10), layout: layout ? { framing: layout.framing, found: layout.found } : null };
+  return { status: "done", frame: job.__frame || null, length: map.total / Math.max(1, Number(style.tempo) || 1), effects_used: effects.length + underlays.length, cutout_failed: cutoutFailed, report: report.slice(0, 10), layout: layout ? { framing: layout.framing, found: layout.found } : null };
 }
 
 // ---------- Lange Aufnahmen in Text umwandeln (Repurposing) ----------
@@ -529,7 +530,7 @@ async function cutClip(job, dir) {
     try { const proxy = path.join(dir, "proxy.mp4"); await run("ffmpeg", ["-y", "-loglevel", "error", "-i", raw, "-vf", "fps=10,scale=480:-2", "-an", proxy]);
       sp = JSON.parse(String(await run("python3", ["-c", SPEAKER_PY, proxy, path.join(__dirname, "models", "yunet.onnx")])).trim()); }
     catch (e) { console.log("Sprechererkennung", String(e.message).slice(0, 200)); }
-    args = speakerCrop(sp, w, h, job.clip.layout);
+    args = speakerCrop(sp, w, h, job.clip.layout); try { job.__frame = frameOf(sp, w, h, job.clip.layout); } catch (e) {}
   }
   const out = path.join(dir, "input");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-i", raw].concat(args, ["-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-f", "mp4", out]));
@@ -555,9 +556,16 @@ async function planDraft(job) {
   try { const first = words.find(w => !w.cut) || words[0], thumb = path.join(dir, "thumb.jpg");
     await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", "x-internal: " + job.src_token + "\r\n", "-ss", String(Math.max(0, (first ? first.s : 0) + 0.4)), "-i", job.base + "/internal/reels/input/" + job.src_id, "-frames:v", "1", "-vf", "scale=-2:640,crop='min(iw,ih*9/16)':ih", thumb]);
     await upload(job.base + "/internal/reels/output/" + job.id + "/thumb.jpg", hdr(job), thumb, "image/jpeg"); } catch (e) { console.log("Vorschaubild", String(e.message).slice(0, 200)); }
+  let frame = null;
+  try { const p0 = clipParts(job.clip)[0], proxy = path.join(dir, "proxy.mp4");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-headers", "x-internal: " + job.src_token + "\r\n", "-ss", String(p0 ? p0.s : 0), "-i", job.base + "/internal/reels/input/" + job.src_id, "-t", String(Math.min(20, p0 ? p0.d : 20)), "-vf", "fps=10,scale=480:-2", "-an", proxy]);
+    const pj = JSON.parse(await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", proxy])); const st = (pj.streams || [])[0] || {}, pw = Number(st.width) || 480, ph = Number(st.height) || 270;
+    if (pw / ph > 0.6) { let sp = null; try { sp = JSON.parse(String(await run("python3", ["-c", SPEAKER_PY, proxy, path.join(__dirname, "models", "yunet.onnx")])).trim()); } catch (e) {}
+      frame = frameOf(sp, pw, ph, job.clip && job.clip.layout); } }
+  catch (e) { console.log("Vorschau-Aufteilung", String(e.message).slice(0, 200)); }
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
   const total = clipParts(job.clip).reduce((a, p) => a + p.d, 0);
-  return { phase: "analyze", draft: true, status: "ready", duration: total, has_audio: true, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [], effekte: job.broll !== false && Array.isArray(plan.effekte) ? plan.effekte.slice(0, 3) : [] };
+  return { phase: "analyze", draft: true, frame, status: "ready", duration: total, has_audio: true, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [], effekte: job.broll !== false && Array.isArray(plan.effekte) ? plan.effekte.slice(0, 3) : [] };
 }
 function clipParts(c) {
   const list = Array.isArray(c.teile) && c.teile.length ? c.teile : [{ start: c.start, end: c.end }];
@@ -573,6 +581,26 @@ function clipWords(c) {
   clipParts(c).forEach(p => { W.forEach(x => { const s = Number(x[1]), e = Number(x[2]); if (s >= p.s - 0.05 && e <= p.s + p.d + 0.05) out.push({ w: String(x[0]), s: Math.max(0, +(s - p.s + off).toFixed(2)), e: +(Math.min(e, p.s + p.d) - p.s + off).toFixed(2) }); }); off += p.d; });
   return out.length >= 3 ? out : null;
 }
+// Aufteilung bestimmen und Ausschnitte berechnen (wird auch für die Vorschau im Editor genutzt)
+function frameOf(sp, w, h, layout) {
+  const even = v => Math.max(2, Math.round(v / 2) * 2), P = sp && Array.isArray(sp.persons) ? sp.persons : [];
+  const ps = P.slice().sort((a, b) => b.n - a.n), top = ps[0], sec = ps[1];
+  if (!layout || layout === "auto") {
+    if (!top) layout = "ganz";
+    else if (sec && sec.n >= top.n * 0.5 && top.s >= 0.12 && sec.s >= 0.12 && Math.abs(top.x - sec.x) > 0.25) layout = "geteilt";
+    else if (top.s < 0.15) layout = "gesicht";
+    else layout = "folgen";
+  }
+  if (!top && layout !== "ganz") layout = "ganz";
+  const f = { layout, w, h };
+  if (layout === "folie" || layout === "gesicht") { // enger Ausschnitt um das Gesicht, ohne die Folie drumherum
+    const ch = even(Math.max(Math.min(h, 100), Math.min(h, top.s * h * 1.7))), cw = even(Math.min(w, ch * 1080 / 892));
+    const x = Math.round(Math.max(0, Math.min(w - cw, top.x * w - cw / 2))), y = Math.round(Math.max(0, Math.min(h - ch, top.y * h - ch * 0.45)));
+    f.tile = { x, y, cw, ch }; }
+  if (layout === "folgen") { const cw = even(Math.min(w, h * 9 / 16)); f.cw = cw; f.cx = Math.round(Math.max(0, Math.min(w - cw, (top ? top.x : 0.5) * w - cw / 2))); }
+  if (layout === "geteilt") f.two = ps.slice(0, 2).sort((a, b) => a.x - b.x).map(p => ({ x: p.x, y: p.y, s: p.s }));
+  return f;
+}
 function speakerCrop(sp, w, h, layout) {
   const even = v => Math.max(2, Math.round(v / 2) * 2), P = sp && Array.isArray(sp.persons) ? sp.persons : [];
   // Ganzes Bild: Querformat vollständig zeigen, darunter unscharfer Hintergrund (ideal für Folien und Bildschirmfreigaben)
@@ -581,14 +609,18 @@ function speakerCrop(sp, w, h, layout) {
   if (!layout || layout === "auto") { const ps = P.slice().sort((a, b) => b.n - a.n), top = ps[0], sec = ps[1];
     if (!top) layout = "ganz";
     else if (sec && sec.n >= top.n * 0.5 && top.s >= 0.12 && sec.s >= 0.12 && Math.abs(top.x - sec.x) > 0.25) layout = "geteilt"; // Galerie mit zwei Personen
-    else if (top.s < 0.15) layout = "folie"; // kleines Gesicht neben einer Bildschirmfreigabe oder Folie
+    else if (top.s < 0.15) layout = "gesicht"; // kleines Gesicht neben einer Bildschirmfreigabe oder Folie
     else layout = "folgen";
     console.log("Layout automatisch:", layout, JSON.stringify(ps.map(p => ({ s: +p.s.toFixed(3), x: +p.x.toFixed(2), n: p.n })))); }
   if (layout === "ganz" || (!P.length && layout !== "geteilt")) return fit;
   // Folie oben, Gesicht unten: ganze Bildschirmfreigabe oben, Ausschnitt um die Sprecherin darunter
-  if (layout === "folie") { if (!P.length) return fit; const p = P.slice().sort((a, b) => b.n - a.n)[0];
-    const ch = even(Math.min(h, Math.max(h * 0.25, p.s * h * 4))), cw2 = even(Math.min(w, ch * 1080 / 1312)), x = Math.round(Math.max(0, Math.min(w - cw2, p.x * w - cw2 / 2))), y = Math.round(Math.max(0, Math.min(h - ch, p.y * h - ch * 0.42)));
-    return ["-filter_complex", "[0:v]split=2[a][b];[a]scale=1080:608:force_original_aspect_ratio=decrease,pad=1080:608:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[t];[b]crop=" + cw2 + ":" + ch + ":" + x + ":" + y + ",scale=1080:1312,setsar=1[u];[t][u]vstack[v]", "-map", "[v]", "-map", "0:a?"]; }
+  // Feste Zonen (1080 × 1920): Band für die Überschrift 240, Gesicht 892, Band für die Untertitel 180, Folie 608
+  if (layout === "folie" || layout === "gesicht") { if (!P.length) return fit; const T = frameOf(sp, w, h, layout).tile, BG = "0x0b0d17";
+    const face = "crop=" + T.cw + ":" + T.ch + ":" + T.x + ":" + T.y + ",scale=1080:892,setsar=1", slide = "scale=1080:608:force_original_aspect_ratio=decrease,pad=1080:608:(ow-iw)/2:(oh-ih)/2:color=" + BG + ",setsar=1";
+    const fc = layout === "gesicht"
+      ? "[0:v]split=2[a][b];[a]" + face + ",pad=1080:1132:0:240:color=" + BG + "[t];[b]" + slide + ",pad=1080:788:0:180:color=" + BG + "[u];[t][u]vstack[v]"
+      : "[0:v]split=2[a][b];[a]" + slide + ",pad=1080:1028:0:240:color=" + BG + "[t];[b]" + face + "[u];[t][u]vstack[v]";
+    return ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?"]; }
   const cw = even(Math.min(w, h * 9 / 16)), cx = x => Math.round(Math.max(0, Math.min(w - cw, x * w - cw / 2)));
   if (layout === "geteilt" && P.length >= 2) {
     const two = P.slice().sort((a, b) => b.n - a.n).slice(0, 2).sort((a, b) => a.x - b.x);
