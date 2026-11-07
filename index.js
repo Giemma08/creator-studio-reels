@@ -521,7 +521,7 @@ async function routeComplete(request, env, url) {
   return json({ ok: true, credits: { monthly: row.monthly_left, monthly_total: st.monthly_total, bonus: row.bonus_left, total: row.monthly_left + row.bonus_left } });
 }
 
-const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "Montserrat", "Poppins", "Cormorant Garamond", "Space Grotesk", "Syne"];
+const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "Montserrat", "Poppins", "Cormorant Garamond", "Space Grotesk", "Syne", "DM Serif Display", "Caveat", "Caveat Brush", "Kalam", "Indie Flower", "Shadows Into Light", "Dancing Script", "Amatic SC", "Quicksand", "Josefin Sans"];
 const CAPTION_STYLES = ["marke", "klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
 const CAP_FONTS = ["Poppins", "Montserrat", "Inter", "DM Sans", "Outfit", "Space Grotesk", "Syne", "Anton", "Bebas Neue", "Archivo Black", "Playfair Display", "DM Serif Display", "Lora", "Cormorant Garamond", "Abril Fatface", "Caveat Brush", "Pacifico", "Space Mono", "Caveat", "Dancing Script", "Amatic SC", "Kalam", "Shadows Into Light", "Indie Flower", "Josefin Sans", "Quicksand"];

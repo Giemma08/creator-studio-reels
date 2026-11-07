@@ -64,6 +64,8 @@ const BRAND_FONTS = {
   "Playfair Display": "PlayfairDisplay[wght].ttf", "Inter": "Inter[opsz,wght].ttf", "Outfit": "Outfit[wght].ttf", "DM Sans": "DMSans[opsz,wght].ttf",
   "Lora": "Lora[wght].ttf", "Montserrat": "Montserrat[wght].ttf", "Poppins": "Poppins-ExtraBold.ttf", "Cormorant Garamond": "CormorantGaramond[wght].ttf",
   "Space Grotesk": "SpaceGrotesk[wght].ttf", "Syne": "Syne[wght].ttf",
+  "DM Serif Display": "DMSerifDisplay-Regular.ttf", "Caveat": "Caveat[wght].ttf", "Caveat Brush": "CaveatBrush-Regular.ttf", "Kalam": "Kalam-Regular.ttf", "Indie Flower": "IndieFlower-Regular.ttf",
+  "Shadows Into Light": "ShadowsIntoLight.ttf", "Dancing Script": "DancingScript[wght].ttf", "Amatic SC": "AmaticSC-Bold.ttf", "Quicksand": "Quicksand[wght].ttf", "Josefin Sans": "JosefinSans[wght].ttf",
 };
 const CAPTION_STYLES = {
   marke:       { label: "Meine Marke", font: "@brand", size: 76, n: 3, outline: 6, shadow: 0, active: "accent+grow", emph: "accent", bold: true },
