@@ -478,6 +478,26 @@ function buildFfmpegArgs(o) {
   const f = [];
   f.push("[0:v]fps=" + FPS + ",scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + (o.cropX != null ? ":'max(0,min(iw-ow,iw*" + Number(o.cropX).toFixed(4) + "-ow/2))':0" : "") + ",setsar=1,select='" + sel + "',setpts=N/" + FPS + "/TB" + (o.grade ? "," + o.grade : "") + "[v0]");
   let v = "v0";
+  // Haut (2.68): glätten, aufhellen und frischer Teint, jeweils nur dort, wo Hautfarbe ist
+  const hautL = Math.max(0, Math.min(5, Number(o.haut) || 0)), hellL = Math.max(0, Math.min(3, Number(o.haut_hell) || 0)), teintL = Math.max(0, Math.min(3, Number(o.teint) || 0));
+  if (hautL || hellL || teintL) { const sR = (0.06 + 0.02 * hautL).toFixed(3), sS = 4 + hautL, K = Math.min(0.95, 0.35 + 0.12 * hautL).toFixed(2);
+    f.push("[" + v + "]format=yuv420p,split=3[hb1][hb2][hb3]");
+    f.push("[hb2]extractplanes=u+v[hu][hv]");
+    f.push("[hu]lut=c0='if(between(val\\,77\\,127)\\,255\\,0)'[hmu]");
+    f.push("[hv]lut=c0='if(between(val\\,133\\,173)\\,255\\,0)'[hmv]");
+    f.push("[hmu][hmv]blend=all_mode=multiply,scale=" + W + ":" + H + ",gblur=sigma=8,split=3[hm0][hm1][hm2]");
+    f.push("[hb1]extractplanes=y+u+v[hoy][hou][hov]");
+    let y = "hoy";
+    if (hautL) { f.push("[hb3]extractplanes=y,scale=iw/2:ih/2,bilateral=sigmaS=" + sS + ":sigmaR=" + sR + ",scale=" + W + ":" + H + "[hsy]"); f.push("[hm0]lut=c0='val*" + K + "'[hmk]"); f.push("[" + y + "][hsy][hmk]maskedmerge[hy1]"); y = "hy1"; }
+    else { f.push("[hb3]nullsink"); f.push("[hm0]nullsink"); }
+    if (hellL) { f.push("[" + y + "]split=2[hya][hyb]"); f.push("[hyb]lut=c0='min(255\\,val*" + (1 + 0.045 * hellL).toFixed(3) + "+" + (3 * hellL) + ")'[hyl]"); f.push("[hya][hyl][hm1]maskedmerge[hy2]"); y = "hy2"; }
+    else f.push("[hm1]nullsink");
+    let uu = "hou", vv = "hov";
+    if (teintL) { f.push("[hm2]scale=iw/2:ih/2,split=2[hc1][hc2]"); f.push("[hou]split=2[hua][hub]"); f.push("[hov]split=2[hva][hvb]");
+      f.push("[hub]lut=c0='max(0\\,val-" + teintL + ")'[hul]"); f.push("[hvb]lut=c0='min(255\\,val+" + (2 * teintL) + ")'[hvl]");
+      f.push("[hua][hul][hc1]maskedmerge[hu2]"); f.push("[hva][hvl][hc2]maskedmerge[hv2]"); uu = "hu2"; vv = "hv2"; }
+    else f.push("[hm2]nullsink");
+    f.push("[" + y + "][" + uu + "][" + vv + "]mergeplanes=0x001020:yuv420p[vhaut]"); v = "vhaut"; }
   if (o.zooms.length || o.dauerzoom) {
     const zs = 0.10 * (o.zoomStrength || 1);
     const rs = o.zooms.map(z => typeof z === "number" ? { a: z, b: z + ZOOM_MIN_HOLD, t: "sanft" } : z);

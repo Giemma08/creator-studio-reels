@@ -979,7 +979,7 @@ function sanitizeStyle(st) {
     split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
     titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
     zoom_scale: st.zoom_scale == null ? null : Math.max(0, Math.min(2, Number(st.zoom_scale) || 0)), sounds_off: !!st.sounds_off,
-    licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(5, Math.round(Number(st.haut) || 0))),
+    licht: Math.max(-2, Math.min(3, Math.round(Number(st.licht) || 0))), haut: Math.max(0, Math.min(5, Math.round(Number(st.haut) || 0))), haut_hell: num(st.haut_hell, 0, 3), teint: num(st.teint, 0, 3),
     logo: /^https:\/\/[^\s"'<>]{8,500}$/.test(String(st.logo || "")) ? String(st.logo) : null };
 }
 

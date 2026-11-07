@@ -322,7 +322,6 @@ async function renderCore(job) {
   const licht = Math.max(-2, Math.min(3, Number(style.licht) || 0)), haut = Math.max(0, Math.min(5, Number(style.haut) || 0));
   const extra = [];
   if (licht) extra.push("eq=gamma=" + (1 + 0.09 * licht).toFixed(2) + ":brightness=" + (0.012 * licht).toFixed(3) + ":contrast=" + (1 + 0.015 * Math.abs(licht)).toFixed(3));
-  if (haut) extra.push("smartblur=lr=" + Math.min(5, 1.0 + 0.6 * haut).toFixed(1) + ":ls=" + Math.min(1, 0.3 + 0.17 * haut).toFixed(2) + ":lt=" + (3 + 3 * haut));
   extra.push(...R.colorFilters(style));
   const gradeFull = [look ? look.grade : "", extra.join(",")].filter(Boolean).join(",");
   const gradeBase = look ? look.grade : "";
@@ -395,7 +394,7 @@ async function renderCore(job) {
   }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, music: musicFile ? { file: musicFile, vol: { leise: 0.35, mittel: 0.6, kraeftig: 0.9 }[mus.vol] || 0.6 } : null, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
+  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, haut, haut_hell: style.haut_hell, teint: style.teint, music: musicFile ? { file: musicFile, vol: { leise: 0.35, mittel: 0.6, kraeftig: 0.9 }[mus.vol] || 0.6 } : null, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
   try { await run("ffmpeg", finalArgs(gradeFull)); }
   catch (e) { if (!extra.length) throw e; console.log("Licht/Haut-Filter fehlgeschlagen, ohne erneut:", e && e.message); await run("ffmpeg", finalArgs(gradeBase)); }
   const thumb = path.join(dir, "final.jpg");
