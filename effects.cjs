@@ -21,6 +21,7 @@ const EFFECTS = {
   // Effekte mit Freistellung (brauchen einen Replicate-Schlüssel, kosten Credits pro Schnitt)
   hinter:      { label: "Wörter hinter dir", needs: "ein kurzer Satz mit 1 bis 3 starken Wörtern", minDur: 1.8, maxDur: 4, cutout: true },
   spotlight:   { label: "Spotlight", needs: "ein Satz, der auf eine Pointe hinausläuft", minDur: 1.6, maxDur: 3.5, cutout: true },
+  bildwand: { label: "Bild hinter dir", needs: "du sprichst über Marken, Medien, Orte oder Ergebnisse, die man im Hintergrund zeigen kann", minDur: 2, maxDur: 6, cutout: true, manual: true },
   greenscreen: { label: "Green Screen", needs: "du sprichst über etwas, das man zeigen kann", minDur: 2.2, maxDur: 5, cutout: true },
   popout:      { label: "Pop-out", needs: "ein Moment, der herausstechen soll", minDur: 1.8, maxDur: 4, cutout: true },
   lichtaus:    { label: "Licht aus", needs: "ein Satz, der auf ein starkes Wort hinausläuft", minDur: 1.4, maxDur: 3, cutout: true },

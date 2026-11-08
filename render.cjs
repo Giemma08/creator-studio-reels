@@ -68,6 +68,9 @@ const BRAND_FONTS = {
   "Shadows Into Light": "ShadowsIntoLight.ttf", "Dancing Script": "DancingScript[wght].ttf", "Amatic SC": "AmaticSC-Bold.ttf", "Quicksand": "Quicksand[wght].ttf", "Josefin Sans": "JosefinSans[wght].ttf",
 };
 const CAPTION_STYLES = {
+  brust:       { label: "Klein auf Brusthöhe", font: "Poppins Bold", size: 46, n: 3, lower: true, outline: 0, shadow: 3, active: "none", emph: "bold" },
+  farbbalken:  { label: "Balken in Markenfarbe", font: "Poppins Bold", size: 40, n: 3, upper: true, plate: true, outline: 14, active: "none", emph: "bold" },
+  einwort:     { label: "Ein Wort elegant", font: "DM Serif Display", size: 66, n: 1, outline: 0, shadow: 3, color: "#FFFFFF", active: "none", emph: "italic+accent" },
   marke:       { label: "Meine Marke", font: "@brand", size: 76, n: 3, outline: 6, shadow: 0, active: "accent+grow", emph: "accent", bold: true },
   klar:        { label: "Klar",        font: "Poppins ExtraBold", size: 76, n: 3, outline: 6, shadow: 0, active: "accent+grow", emph: "accent" },
   box:         { label: "Box",         font: "Poppins Bold", size: 62, n: 3, plate: true, outline: 18, active: "accent", emph: "accent" },
@@ -200,7 +203,7 @@ function buildAss(words, map, style, layout) {
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
-    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(1.6, Number(style.hook_scale) || 1))) + "," + (style.hook_box === "white" ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
+    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(1.6, Number(style.hook_scale) || 1))) + "," + (["white", "zeilen", "neon"].includes(style.hook_box) ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" || style.hook_box === "zeilen" ? "&H00FFFFFF&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" || style.hook_box === "zeilen" ? "&H00FFFFFF&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : style.hook_box === "zeilen" || style.hook_box === "neon" ? "3,12,0" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
     "Style: TxtO,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&H00141414&,&H64000000&,0,0,0,0,100,100,0,0,1,0,0,7,90,90,0,1",
     "Style: TxtB,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&HFF000000&,&H00FFFFFF&,0,0,0,0,100,100,0,0,4,20,0,7,90,90,0,1",
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -209,8 +212,16 @@ function buildAss(words, map, style, layout) {
   const tkd = titelkarteDur(style);
   if (style.hook !== false && style.hook_titel) {
     const hd = Number(style.hook_dur); const end = Math.min(tkd + (isFinite(hd) && hd >= 1 ? hd : 3.2), map.total);
-    lines.push("Dialogue: 1," + assTime(tkd) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(" + (tkd < 0.05 ? 0 : 120) + ",200)}" + assText(caseOf({}, style.hook_titel)));
+    const htx = assText(caseOf({}, style.hook_titel));
+    if (style.hook_anim === "schreiben") { const te = Math.min(end - 0.3, tkd + Math.min(1.8, 0.06 * String(style.hook_titel).length));
+      typeSteps(htx, tkd, te).forEach(s => lines.push("Dialogue: 1," + assTime(s.t0) + "," + assTime(s.t1) + ",Hook,,0,0,0,,{\\fad(0,0)}" + s.txt));
+      lines.push("Dialogue: 1," + assTime(te) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(0,200)}" + htx); }
+    else lines.push("Dialogue: 1," + assTime(tkd) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(" + (tkd < 0.05 ? 0 : 120) + ",200)}" + htx);
   }
+  // Schlüsselwörter oben (Vorlage „Expertin erklärt“): betonte Wörter groß in der Akzentfarbe
+  if (style.kw_top) { const kacc = hexAss(style.accent || "#E6007E"), hEnd = style.hook !== false && style.hook_titel ? tkd + (Number(style.hook_dur) || 3.2) : 0; let lastEnd = -1;
+    words.forEach(w => { if (w.cut || w.hide || !w.emph) return; const a = map(w.s), b = Math.min(map.total, map(w.e) + 0.8); if (a < hEnd || a < lastEnd || b - a < 0.3) return; lastEnd = b;
+      lines.push("Dialogue: 2," + assTime(a) + "," + assTime(b) + ",TxtO,,0,0,0,,{\\an8\\pos(540,250)\\fnArchivo Black\\fs104\\b0\\c" + kacc + "\\bord0\\shad5\\4c&H000000&\\4a&H80&\\fad(80,150)}" + assText(String(w.w).replace(/[.,!?;:„“"]/g, "").toLocaleUpperCase("de-DE"))); }); }
   if (style.captions === false) { textEvents(words, map, style).forEach(l => lines.push(l)); return lines.join("\n") + "\n"; }
   const hidden = (style.hide_captions || []).map(r => [Number(r[0]), Number(r[1])]);
   const isHidden = t => hidden.some(r => t >= r[0] && t < r[1]);
@@ -289,10 +300,13 @@ const TEXT_ARTS = {
   ende_gross: { y: 63, font: "Anton", size: 140, an: 8 },
   ende_text:  { y: 73, font: "Poppins Bold", size: 50, an: 8 },
   karte_titel: { y: 66, font: "Caveat Brush", size: 130, an: 8 },
+  zettel: { y: 70, font: "Kalam", size: 46, an: 8 },
+  chat: { y: 36, font: "Inter", size: 36, an: 7 },
+  sticker: { y: 10, font: "Inter", size: 100, an: 7 },
   poesie: { y: 42, font: "DM Serif Display", size: 92, an: 8 },
 };
 const TEXT_ANIMS = ["einblenden", "hoch", "pop", "schreiben", "marker"];
-const SHAPES = { pfeil: "m 0 18 l 46 18 l 46 4 l 70 24 l 46 44 l 46 30 l 0 30", haken: "m 0 24 l 10 14 l 22 26 l 48 0 l 58 10 l 22 46", pfeilunten: "m 30 0 l 42 0 l 42 52 l 60 34 l 68 42 l 36 74 l 4 42 l 12 34 l 30 52" };
+const SHAPES = { stern: "m 60 0 l 68 31 l 90 8 l 81 39 l 112 30 l 89 52 l 120 60 l 89 68 l 112 90 l 81 81 l 90 112 l 68 89 l 60 120 l 52 89 l 30 112 l 39 81 l 8 90 l 31 68 l 0 60 l 31 52 l 8 30 l 39 39 l 30 8 l 52 31", funkeln: "m 60 0 l 70 48 l 120 60 l 70 72 l 60 120 l 50 72 l 0 60 l 50 48", herz: "m 60 37 l 60 35 l 62 30 l 65 24 l 72 18 l 80 13 l 90 12 l 101 15 l 110 21 l 115 30 l 118 41 l 115 51 l 110 62 l 101 72 l 90 81 l 80 90 l 72 98 l 65 105 l 62 111 l 60 115 l 60 116 l 60 115 l 58 111 l 55 105 l 48 98 l 40 90 l 30 81 l 19 72 l 10 62 l 5 51 l 2 41 l 5 30 l 10 21 l 19 15 l 30 12 l 40 13 l 48 18 l 55 24 l 58 30 l 60 35", blitz: "m 70 0 l 20 70 l 55 70 l 40 120 l 100 45 l 62 45 l 82 0", pfeil: "m 0 18 l 46 18 l 46 4 l 70 24 l 46 44 l 46 30 l 0 30", haken: "m 0 24 l 10 14 l 22 26 l 48 0 l 58 10 l 22 46", pfeilunten: "m 30 0 l 42 0 l 42 52 l 60 34 l 68 42 l 36 74 l 4 42 l 12 34 l 30 52" };
 function quoteMarks(lang) { return lang === "de" ? ["„", "“"] : lang === "fr" ? ["« ", " »"] : ["“", "”"]; }
 // Zeitfenster eines Textes in Schnittzeit
 function textWindow(t, words, map) {
@@ -353,15 +367,32 @@ function textEvents(words, map, style) {
     if (t.art === "punkt") {
       shape(win.start, win.end, kind === "schreiben" ? "einblenden" : kind, 90, y + 7, "pfeil", acc, 3);
       put("TxtO", 180, 90, 180, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\3c&H141414&\\bord5\\shad0", text);
+    } else if (t.art === "kapitel" && t.v === "story") {
+      put("TxtO", 90, 90, 540, "\\fnDM Serif Display\\fs72\\b0\\c&H00FFFFFF&\\bord0\\shad3\\4c&H000000&\\4a&H70&", text);
+      const lab = assText(t.text2 || ""); if (lab) dlg(win.start + 0.25, win.end, "TxtO", 120, 120, "\\an8" + animTags("einblenden", 540, y + 104) + "\\fnInter\\fs38\\b0\\c&H00FFFFFF&\\bord0\\shad2\\4c&H000000&\\4a&H70&", lab);
     } else if (t.art === "kapitel") {
       put("TxtO", 90, 90, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\bord0\\shad4\\4c&H000000&\\4a&H64&", text);
     } else if (t.art === "zahl") {
       put("TxtO", 60, 60, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c" + acc + "\\3c&H141414&\\bord8\\shad0", text);
       const lab = assText(t.text2 || ""); if (lab) dlg(win.start, win.end, "TxtO", 90, 90, "\\an8" + animTags(kind === "schreiben" ? "einblenden" : kind, 540, y + A.size + 10) + "\\fnPoppins ExtraBold\\fs56\\b0\\c&H00FFFFFF&\\3c&H141414&\\bord5\\shad0", lab);
+    } else if (t.art === "zitat" && t.v === "story") {
+      put("TxtO", 120, 120, 540, "\\fnDM Serif Display\\fs66\\b0\\c&H00FFFFFF&\\bord0\\shad3\\4c&H000000&\\4a&H70&", text);
+    } else if (t.art === "chat") {
+      // Chat-Eingabeleiste: dunkles Feld mit deinem Beispieltext, darüber der Name des Programms
+      if (t.title) dlg(win.start, win.end, "TxtO", 0, 0, "\\an1\\pos(84," + (y - 40) + ")\\fnInter\\fs28\\b0\\c&H00C8C8C8&\\bord0\\shad0\\fad(150,200)", "✦ " + assText(t.title));
+      put("TxtB", 110, 110, 110, "\\fnInter\\fs" + A.size + "\\b0\\c&H00F5F5F5&\\4c&H00242424&\\4a&H0C&\\bord30\\shad0", text);
+    } else if (t.art === "sticker") {
+      const nm = SHAPES[t.text] ? t.text : "stern", sc = Math.max(40, Math.min(300, Number(t.size) || 100)), xs = Math.round((t.x != null ? Number(t.x) : 10) / 100 * 1080);
+      dlg(win.start, win.end, "TxtO", 0, 0, "\\an7" + animTags(kind === "schreiben" || kind === "marker" ? "pop" : kind, xs, y) + "\\fscx" + sc + "\\fscy" + sc + "\\p1\\bord0\\shad0\\1c" + acc, SHAPES[nm] + "{\\p0}");
+    } else if (t.art === "zettel") {
+      put("TxtB", 170, 170, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H002B2B2B&\\4c&H00E3EEF3&\\4a&H00&\\bord34\\shad0\\frz2", text);
     } else if (t.art === "zitat") {
       put("TxtB", 150, 150, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H001A1A1A&\\4c&H00FFFFFF&\\4a&H00&\\bord40\\shad0", text);
     } else if (t.art === "banner") {
       put("TxtB", 110, 110, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\4c" + acc + "\\4a&H00&\\bord24\\shad0", text);
+    } else if (t.art === "notiz" && t.v === "hand") {
+      put("TxtO", 140, 140, 540, "\\fnCaveat\\fs74\\b0\\c&H00FFFFFF&\\bord0\\shad2\\4c&H000000&\\4a&H80&\\frz6", text);
+      if (t.pfeil) shape(win.start, win.end, "einblenden", 420, y + 86, "pfeilunten", "&H00FFFFFF&", 2);
     } else if (t.art === "notiz") {
       put("TxtO", 120, 120, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H004CC9F2&\\3c&H141414&\\bord4\\shad0\\frz-4", text);
       shape(win.start, win.end, kind === "schreiben" ? "einblenden" : kind, 504, y + A.size + 14, "pfeilunten", "&H004CC9F2&", 3);
@@ -376,6 +407,13 @@ function textEvents(words, map, style) {
       put("TxtO", 90, 90, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H001A1A1A&\\bord0\\shad0\\frz-3", text);
     } else if (t.art === "ende_text") {
       put("TxtO", 110, 110, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\3c&H141414&\\bord5\\shad0", text);
+    } else if (t.art === "liste" && t.v === "schlicht") {
+      const items = (Array.isArray(t.items) ? t.items : String(t.text || "").split(/\n|;/)).map(x => assText(x)).filter(Boolean).slice(0, 6); if (!items.length) return;
+      const n = items.length, step = (win.end - win.start) * 0.8 / n, acc2 = acc; let y0 = y;
+      if (t.title) { dlg(win.start, win.end, "TxtO", 80, 80, "\\an7\\pos(80," + y0 + ")\\fnInter\\fs48\\b0\\c&H00FFFFFF&\\bord0\\shad2\\4c&H000000&\\4a&H70&\\fad(150,200)", assText(t.title)); y0 += 66; }
+      items.forEach((it, i) => { const ti = win.start + i * step, tn = i + 1 < n ? win.start + (i + 1) * step : win.end, yi = y0 + i * 62, lab = (i + 1) + ". " + it;
+        const base = "\\an7\\pos(80," + yi + ")\\fnInter\\fs46\\b0\\bord0\\shad2\\4c&H000000&\\4a&H70&";
+        dlg(ti, tn, "TxtO", 80, 80, base + "\\c" + acc2 + "\\fad(150,0)", lab); if (i + 1 < n) dlg(tn, win.end, "TxtO", 80, 80, base + "\\c&H00FFFFFF&\\fad(0,200)", lab); });
     } else if (t.art === "liste") {
       const items = (Array.isArray(t.items) ? t.items : String(t.text || "").split(/\n|;/)).map(x => assText(x)).filter(Boolean).slice(0, 6); if (!items.length) return;
       const n = items.length, step = (win.end - win.start) * 0.8 / n;

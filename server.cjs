@@ -380,14 +380,15 @@ async function renderCore(job) {
         await run("ffmpeg", ["-y", "-loglevel", "error", "-i", base, "-ss", it.t0.toFixed(3), "-t", it.d.toFixed(3), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-r", "30", seg]);
         await run("ffmpeg", ["-y", "-loglevel", "error", "-i", seg, "-vf", "scale=720:1280", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", small]);
         await C.matte(job.replicate_key, small, mask);
-        let fxFile = null;
-        const needsLayer = !["greenscreen", "popout"].includes(it.fx.type) || it.fx.titel;
+        let fxFile = null, bgFile = null;
+        if (it.fx.type === "bildwand") { if (!it.fx.bild) throw new Error("kein Bild für die Bildwand"); bgFile = path.join(dir, "wand" + i); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(it.fx.bild), hdr(job), bgFile); }
+        const needsLayer = !["greenscreen", "popout", "bildwand"].includes(it.fx.type) || (it.fx.titel && it.fx.type !== "bildwand");
         if (needsLayer) {
           E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || LOCALES[job.lang] || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "", head: layout && layout.head }, ASSET_DIR);
           await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);
           fxFile = path.join(fxDir, "out.webm");
         }
-        await run("ffmpeg", C.composeArgs({ type: it.fx.type, seg, mask, fx: fxFile, d: it.d, accent: style.accent, out: comp, head: layout && layout.head }));
+        await run("ffmpeg", C.composeArgs({ type: it.fx.type, seg, mask, fx: fxFile, bgFile, d: it.d, accent: style.accent, out: comp, head: layout && layout.head }));
         underlays.push({ file: comp, t0: it.t0, d: it.d });
       } catch (e) { cutoutFailed++; console.log("Freistellungs-Effekt übersprungen", it.fx.type, e.message.slice(0, 300)); report.push("Der Profi-Effekt „" + (E.EFFECTS[it.fx.type] || {}).label + "“ hat nicht geklappt. Die Credits dafür bekommst du zurück."); }
     }

@@ -90,6 +90,13 @@ function composeArgs(o) {
     f.push("[bg0][card]overlay=x=" + (x0 - 12) + ":y=" + (y0 + ct - 12) + "[b1]");
     f.push("[b1][p]overlay=x=" + x0 + ":y=" + y0 + "[b2]");
     if (o.fx) f.push(fxIn.slice(0, -1), "[b2][fx]overlay=0:0,format=yuv420p[v]"); else f.push("[b2]format=yuv420p[v]");
+  } else if (o.type === "bildwand") {
+    // Dein Bild oder deine Logo-Collage füllt den Hintergrund, du bleibst groß im Vordergrund
+    args.push("-loop", "1", "-t", o.d.toFixed(2), "-i", o.bgFile);
+    const bgIdx = o.fx ? 3 : 2;
+    f.push("[" + bgIdx + ":v]scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + ",setsar=1,fps=30[bg0]");
+    if (o.fx) f.push(fxIn.slice(0, -1), "[bg0][fx]overlay=0:0[bg]"); else f.push("[bg0]null[bg]");
+    f.push("[0:v][m]alphamerge[p]", "[bg][p]overlay=0:0,format=yuv420p[v]");
   } else if (o.type === "greenscreen") {
     // Hintergrund: Verlauf in der Markenfarbe; Person verkleinert unten in der Mitte
     const c = String(o.accent || "#E6007E").replace("#", "0x");
