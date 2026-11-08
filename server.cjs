@@ -369,7 +369,7 @@ async function renderCore(job) {
     const base = path.join(dir, "base.mp4");
     let baseOk = false;
     if (job.replicate_key) {
-      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, cropX, grade: gradeFull, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), dauerzoom: !!style.dauerzoom && zoomScale > 0, vfx, vignette: !!style.vignette, koernung: !!style.koernung, loopFrame, cropX, voice: style.stimme, split, card, pips, tempo: Number(style.tempo) || 1, assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
+      try { await run("ffmpeg", R.buildFfmpegArgs({ input, segs, map, zooms, images: [], sounds: [], effects: [], focus: focus0, cropX, grade: gradeFull, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), dauerzoom: !!style.dauerzoom && zoomScale > 0, welle: !!style.zoom_welle && zoomScale > 0, vfx, vignette: !!style.vignette, koernung: !!style.koernung, loopFrame, cropX, voice: style.stimme, split, card, pips, tempo: Number(style.tempo) || 1, assFile: null, fontsDir: FONT_DIR, output: base, hasAudio: false })); baseOk = true; }
       catch (e) { console.log("Grundschnitt fehlgeschlagen", e.message.slice(0, 300)); }
     }
     for (let i = 0; i < cutouts.length; i++) {
@@ -395,7 +395,7 @@ async function renderCore(job) {
   }
   const out = path.join(dir, "final.mp4");
   const focus = layout && layout.found ? { x: layout.head.cx / 1080, y: ((layout.head.top + layout.head.chin) / 2) / 1920 } : null;
-  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, haut, haut_hell: style.haut_hell, teint: style.teint, tonVol: style.ton_vol == null ? 1 : Number(style.ton_vol), music: musicFile ? { file: musicFile, vol: { leise: 0.35, mittel: 0.6, kraeftig: 0.9 }[mus.vol] || 0.6 } : null, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
+  const finalArgs = g => R.buildFfmpegArgs({ input, segs, map, zooms, images, sounds, effects, underlays, focus, logo: logoFile, logoPos: style.logo_pos, haut, haut_hell: style.haut_hell, teint: style.teint, tonVol: style.ton_vol == null ? 1 : Number(style.ton_vol), music: musicFile ? { file: musicFile, vol: { leise: 0.35, mittel: 0.6, kraeftig: 0.9 }[mus.vol] || 0.6 } : null, grade: g, zoomStrength: (look ? look.zoom : 1) * (zoomScale || 1), dauerzoom: !!style.dauerzoom && zoomScale > 0, welle: !!style.zoom_welle && zoomScale > 0, assFile, fontsDir: FONT_DIR, output: out, hasAudio: info.hasAudio });
   try { await run("ffmpeg", finalArgs(gradeFull)); }
   catch (e) { if (!extra.length) throw e; console.log("Licht/Haut-Filter fehlgeschlagen, ohne erneut:", e && e.message); await run("ffmpeg", finalArgs(gradeBase)); }
   const thumb = path.join(dir, "final.jpg");

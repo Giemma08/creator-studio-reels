@@ -66,8 +66,14 @@ const BRAND_FONTS = {
   "Space Grotesk": "SpaceGrotesk[wght].ttf", "Syne": "Syne[wght].ttf",
   "DM Serif Display": "DMSerifDisplay-Regular.ttf", "Caveat": "Caveat[wght].ttf", "Caveat Brush": "CaveatBrush-Regular.ttf", "Kalam": "Kalam-Regular.ttf", "Indie Flower": "IndieFlower-Regular.ttf",
   "Shadows Into Light": "ShadowsIntoLight.ttf", "Dancing Script": "DancingScript[wght].ttf", "Amatic SC": "AmaticSC-Bold.ttf", "Quicksand": "Quicksand[wght].ttf", "Josefin Sans": "JosefinSans[wght].ttf",
+  "Instrument Serif": "InstrumentSerif-Regular.ttf", "Nothing You Could Do": "NothingYouCouldDo.ttf",
+  "Archivo Black": "ArchivoBlack-Regular.ttf", "Tinos": "Tinos-Regular.ttf", "Poppins SemiBold": "Poppins-SemiBold.ttf", "Poppins Medium": "Poppins-Medium.ttf", "Poppins Black": "Poppins-Black.ttf",
 };
 const CAPTION_STYLES = {
+  zeig:        { label: "Ein Wort schlicht", font: "Poppins Medium", size: 100, n: 1, outline: 0, shadow: 2, color: "#FFFFFF", active: "none", emph: "none" },
+  klartext:    { label: "Groß und klar", font: "Poppins SemiBold", size: 140, n: 2, outline: 0, shadow: 3, color: "#FFFFFF", active: "none", emph: "none" },
+  rosa:        { label: "Ein Wort in Großbuchstaben", font: "Poppins ExtraBold", size: 86, n: 1, upper: true, outline: 4, outlineColor: "#4A1748", shadow: 0, color: "#F6C9F2", active: "none", emph: "none" },
+  hand:        { label: "Handschrift neben dir", font: "Nothing You Could Do", size: 84, n: 1, outline: 0, shadow: 2, color: "#FFFFFF", active: "none", emph: "none", side: true },
   brust:       { label: "Klein auf Brusthöhe", font: "Poppins Bold", size: 46, n: 3, lower: true, outline: 0, shadow: 3, active: "none", emph: "bold" },
   farbbalken:  { label: "Balken in Markenfarbe", font: "Poppins Bold", size: 40, n: 3, upper: true, plate: true, outline: 14, active: "none", emph: "bold" },
   einwort:     { label: "Ein Wort elegant", font: "DM Serif Display", size: 66, n: 1, outline: 0, shadow: 3, color: "#FFFFFF", active: "none", emph: "italic+accent" },
@@ -197,13 +203,13 @@ function buildAss(words, map, style, layout) {
   const border = st.plate && !rounded ? 4 : 1;
   const plateCol = st.plateColor ? "&H" + (st.plateAlpha || "30") + assColor(st.plateColor).slice(4) : "&H50141414&";
   const back = st.plate ? plateCol : "&H64000000&";
-  const outlineCol = st.plate ? "&HFF000000&" : st.glow ? accent : "&H00141414&";
+  const outlineCol = st.plate ? "&HFF000000&" : st.glow ? accent : st.outlineColor ? hexAss(st.outlineColor) : "&H00141414&";
   const lines = [
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
-    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(1.6, Number(style.hook_scale) || 1))) + "," + (["white", "zeilen", "neon"].includes(style.hook_box) ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" || style.hook_box === "zeilen" ? "&H00FFFFFF&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" || style.hook_box === "zeilen" ? "&H00FFFFFF&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : style.hook_box === "zeilen" || style.hook_box === "neon" ? "3,12,0" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
+    "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + "," + (st.side ? (sideX(style) > 540 ? "9,80," + (1080 - sideX(style)) + "," : "7," + sideX(style) + ",80,") : "8,80,80,") + top + ",1",
+    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(2.6, Number(style.hook_scale) || 1))) + "," + (/^#[0-9a-f]{6}$/i.test(String(style.hook_color || "")) ? hexAss(style.hook_color) : ["white", "zeilen", "neon"].includes(style.hook_box) ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "zeilen" && style.hook_bg ? hexAss(style.hook_bg) : style.hook_box === "white" || style.hook_box === "zeilen" || style.hook_box === "fein" ? "&H00FFFFFF&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "zeilen" && style.hook_bg ? hexAss(style.hook_bg) : style.hook_box === "white" || style.hook_box === "zeilen" ? "&H00FFFFFF&" : style.hook_box === "fein" ? "&HA0000000&" : style.hook_box === "neon" ? "&H005BF2E9&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : style.hook_box === "klar" ? "1,0,0" : style.hook_box === "fein" ? "1,1.6,2" : style.hook_box === "zeilen" || style.hook_box === "neon" ? "3,12,0" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
     "Style: TxtO,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&H00141414&,&H64000000&,0,0,0,0,100,100,0,0,1,0,0,7,90,90,0,1",
     "Style: TxtB,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&HFF000000&,&H00FFFFFF&,0,0,0,0,100,100,0,0,4,20,0,7,90,90,0,1",
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -212,14 +218,24 @@ function buildAss(words, map, style, layout) {
   const tkd = titelkarteDur(style);
   if (style.hook !== false && style.hook_titel) {
     const hd = Number(style.hook_dur); const end = Math.min(tkd + (isFinite(hd) && hd >= 1 ? hd : 3.2), map.total);
-    const htx = assText(caseOf({}, style.hook_titel));
-    if (style.hook_anim === "schreiben") { const te = Math.min(end - 0.3, tkd + Math.min(1.8, 0.06 * String(style.hook_titel).length));
+    let htx = assText(caseOf({}, style.hook_upper ? String(style.hook_titel).toLocaleUpperCase("de-DE") : style.hook_titel));
+    if (style.hook_zwei) { const raw = String(style.hook_titel).replace(/\s*\|\s*/g, "\n"); let l1, l2; if (raw.includes("\n")) { const p = raw.split("\n"); l1 = p.slice(0, -1).join(" "); l2 = p[p.length - 1]; } else { const ws = raw.split(/\s+/); const k = Math.max(1, ws.length - 2); l1 = ws.slice(0, k).join(" "); l2 = ws.slice(k).join(" "); }
+      htx = assText(l1) + "\\N{\\c" + hexAss(style.hook2_color || "#F3ECA0") + "\\fscx125\\fscy125}" + assText(l2); }
+    if (style.hook_anim === "schreiben" && !style.hook_zwei) { const te = Math.min(end - 0.3, tkd + Math.min(1.8, 0.06 * String(style.hook_titel).length));
       typeSteps(htx, tkd, te).forEach(s => lines.push("Dialogue: 1," + assTime(s.t0) + "," + assTime(s.t1) + ",Hook,,0,0,0,,{\\fad(0,0)}" + s.txt));
       lines.push("Dialogue: 1," + assTime(te) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(0,200)}" + htx); }
     else lines.push("Dialogue: 1," + assTime(tkd) + "," + assTime(end) + ",Hook,,0,0,0,,{\\fad(" + (tkd < 0.05 ? 0 : 120) + ",200)}" + htx);
   }
+  // Unterzeile der Überschrift in Handschrift (Vorlage „Storytime“)
+  if (style.hook !== false && style.hook_titel && style.hook_sub) {
+    const hf0 = style.hook_font && BRAND_FONTS[style.hook_font] ? style.hook_font : "Poppins ExtraBold", hs = Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(2.6, Number(style.hook_scale) || 1)));
+    const hy = style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : 250, maxW = 1080 - 2 * (style.hook_wide ? 50 : 110);
+    const tw = textWidth(hf0, hs, String(style.hook_titel)) || String(style.hook_titel).length * hs * 0.4, nl = String(style.hook_titel).split("\n").length > 1 ? String(style.hook_titel).split("\n").length : Math.max(1, Math.ceil(tw / maxW));
+    const sy = isFinite(Number(style.hook_sub_y)) && style.hook_sub_y != null ? Math.round(Number(style.hook_sub_y) / 100 * 1920) : hy + Math.round(nl * hs * 1.02) + 22;
+    const hd2 = Number(style.hook_dur); const e2 = Math.min(tkd + (isFinite(hd2) && hd2 >= 1 ? hd2 : 3.2), map.total);
+    lines.push("Dialogue: 1," + assTime(tkd + 0.15) + "," + assTime(e2) + ",TxtO,,80,80,0,,{\\an8\\pos(540," + sy + ")\\fn" + (style.hook_sub_font === "Poppins BoldItalic" ? "Poppins" : "Nothing You Could Do") + "\\fs" + Math.round(hs * (style.hook_sub_font === "Poppins BoldItalic" ? 0.5 : 0.78)) + (style.hook_sub_font === "Poppins BoldItalic" ? "\\b1\\i1" : "\\b0") + "\\c" + hexAss(style.hook_sub_color || style.hook_color || "#FFFFFF") + "\\bord0" + (style.hook_box === "klar" ? "\\shad0" : "\\shad2\\4c&H000000&\\4a&H90&") + "\\fad(200,200)}" + assText(String(style.hook_sub))); }
   // Schlüsselwörter oben (Vorlage „Expertin erklärt“): betonte Wörter groß in der Akzentfarbe
-  if (style.kw_top) { const kacc = hexAss(style.accent || "#E6007E"), hEnd = style.hook !== false && style.hook_titel ? tkd + (Number(style.hook_dur) || 3.2) : 0; let lastEnd = -1;
+  if (style.kw_top) { const kacc = hexAss(style.kw_color || style.accent || "#E6007E"), hEnd = style.hook !== false && style.hook_titel ? tkd + (Number(style.hook_dur) || 3.2) : 0; let lastEnd = -1;
     const busyTop = []; try { textEvents(words, map, style); (textEvents.taken || new Map()).forEach((v, t) => { if (v && t && t.art !== "sticker" && (t.art === "liste" || (isFinite(Number(t.y)) && t.y != null ? Number(t.y) : (TEXT_ARTS[t.art] || {}).y || 50) < 35)) busyTop.push([v.start, v.end]); }); } catch (e) {} const es0 = endeStart(style, map.total);
     words.forEach(w => { if (w.cut || w.hide || !w.emph) return; const a = map(w.s), b = Math.min(map.total, map(w.e) + 0.8); if (a < hEnd || a < lastEnd || b - a < 0.3 || (es0 != null && b > es0) || busyTop.some(r => a < r[1] && b > r[0])) return; lastEnd = b;
       lines.push("Dialogue: 2," + assTime(a) + "," + assTime(b) + ",TxtO,,0,0,0,,{\\an8\\pos(540,250)\\fnArchivo Black\\fs104\\b0\\c" + kacc + "\\bord0\\shad5\\4c&H000000&\\4a&H80&\\fad(80,150)}" + assText(String(w.w).replace(/[.,!?;:„“"]/g, "").toLocaleUpperCase("de-DE"))); }); }
@@ -227,7 +243,7 @@ function buildAss(words, map, style, layout) {
   const hidden = (style.hide_captions || []).map(r => [Number(r[0]), Number(r[1])]);
   const isHidden = t => hidden.some(r => t >= r[0] && t < r[1]);
   const moves = (style.caption_moves || []).map(r => [Number(r[0]), Number(r[1]), Number(r[2])]);
-  const moveFor = t => { const mv = moves.find(r => t >= r[0] && t < r[1]); return mv ? "{\\an8\\pos(" + (W / 2) + "," + Math.round(mv[2]) + ")}" : ""; };
+  const moveFor = t => { const mv = moves.find(r => t >= r[0] && t < r[1]); if (!mv) return ""; if (st.side) { const sx = sideX(style); return "{\\an" + (sx > 540 ? 9 : 7) + "\\pos(" + sx + "," + Math.round(mv[2]) + ")}"; } return "{\\an8\\pos(" + (W / 2) + "," + Math.round(mv[2]) + ")}"; };
   // Gruppen bilden
   const groups = []; let g = [];
   for (let i = 0; i < kept.length; i++) {
@@ -303,6 +319,12 @@ const TEXT_ARTS = {
   karte_titel: { y: 66, font: "Caveat Brush", size: 130, an: 8 },
   zettel: { y: 70, font: "Kalam", size: 46, an: 8 },
   chat: { y: 36, font: "Inter", size: 36, an: 7 },
+  gedanke: { y: 15, font: "Nothing You Could Do", size: 84, an: 8 },
+  titel: { y: 12, font: "Archivo Black", size: 140, an: 8 },
+  stapel: { y: 22, font: "Poppins SemiBold", size: 150, an: 7 },
+  kommentar: { y: 30, font: "Poppins", size: 54, an: 7 },
+  riesig: { y: 34, font: "Archivo Black", size: 230, an: 7 },
+  nachricht: { y: 70, font: "Inter", size: 40, an: 8 },
   sticker: { y: 10, font: "Inter", size: 100, an: 7 },
   poesie: { y: 42, font: "DM Serif Display", size: 92, an: 8 },
 };
@@ -341,6 +363,14 @@ function endeStart(style, total) { const e = style.ende || {}; if (!(e.kommentar
 function endeTexts(style, total) {
   const e = style.ende || {}, d = Math.min(Math.max(2, Number(e.dauer) || 3.5), total), a = Math.max(0, total - d), L = endeLayout(e), W2 = ENDE_WORTE[style.lang] || ENDE_WORTE.de, out = [];
   const abs = { start: a, end: total + 0.05 };
+  if (style.ende_stil === "gross2" && e.kommentar) {
+    const col = style.ende_color || "#F3E3A0";
+    return [{ art: "titel", text: style.lang === "en" ? "COMMENT" : "KOMMENTIERE", y: 4, color: col, font: "Poppins Black", anim: "pop", abs }, { art: "titel", text: String(e.kommentar), y: 9, color: col, font: "Poppins Black", scale: 190, anim: "pop", abs }];
+  }
+  if (style.ende_stil === "hand" && (e.kommentar || e.freebie_titel)) {
+    const kw = e.kommentar ? String(e.kommentar).toLocaleUpperCase("de-DE") : "", satz = e.kommentar ? (style.lang === "en" ? "Comment " + kw + " " + (e.kommentar_text || "for info") : "Kommentiere " + kw + " " + (e.kommentar_text || "für Infos")) : e.freebie_titel;
+    return [{ art: "gedanke", text: satz, y: 16, anim: "einblenden", abs }];
+  }
   if (e.freebie_key || e.freebie_titel) { out.push({ art: "ende_klein", text: W2[1], y: L.label, anim: "pop", abs });
     if (e.freebie_titel) out.push({ art: "ende_text", text: e.freebie_titel, y: L.titel, anim: "hoch", abs }); }
   if (e.kommentar) { out.push({ art: "ende_klein", text: W2[0], y: L.k1, anim: "pop", abs }); out.push({ art: "ende_gross", text: String(e.kommentar).toLocaleUpperCase("de-DE"), y: L.k2, anim: "pop", abs });
@@ -382,6 +412,9 @@ function textEvents(words, map, style) {
     if (t.art === "banner") text = text.toLocaleUpperCase("de-DE");
     if (t.art === "zitat") { const q = quoteMarks(lang); text = q[0] + text + q[1]; }
     const put = (sty, mL, mR, x, tagsBase, txt) => {
+      if (t.x != null && isFinite(Number(t.x))) x = Math.round(Math.max(2, Math.min(98, Number(t.x))) / 100 * 1080);
+      const scl = Number(t.scale); if (isFinite(scl) && scl > 0 && scl !== 100) tagsBase += "\\fscx" + Math.round(scl) + "\\fscy" + Math.round(scl);
+      if (/^#[0-9a-f]{6}$/i.test(String(t.color || ""))) tagsBase += "\\c" + hexAss(t.color);
       if (kind === "schreiben") typeSteps(txt, win.start, win.end).forEach(st => dlg(st.t0, st.t1, sty, mL, mR, "\\an" + A.an + "\\pos(" + x + "," + y + ")" + (st.t1 >= win.end - 0.001 ? "\\fad(0,200)" : "") + tagsBase, st.txt));
       else { let tg = animTags(kind, x, y); if (win.start < 0.05) tg = tg.replace(/\\fad\((\d+),/, "\\fad(0,"); dlg(win.start, win.end, sty, mL, mR, "\\an" + A.an + tg + tagsBase, txt); } // ab Sekunde 0 sofort sichtbar (erstes Bild = Vorschaubild)
     };
@@ -398,6 +431,26 @@ function textEvents(words, map, style) {
       const lab = assText(t.text2 || ""); if (lab) dlg(win.start, win.end, "TxtO", 90, 90, "\\an8" + animTags(kind === "schreiben" ? "einblenden" : kind, 540, y + A.size + 10) + "\\fnPoppins ExtraBold\\fs56\\b0\\c&H00FFFFFF&\\3c&H141414&\\bord5\\shad0", lab);
     } else if (t.art === "zitat" && t.v === "story") {
       put("TxtO", 120, 120, 540, "\\fnDM Serif Display\\fs66\\b0\\c&H00FFFFFF&\\bord0\\shad3\\4c&H000000&\\4a&H70&", text);
+    } else if (t.art === "titel") {
+      const tt = String(t.text || "").replace(/\s*\|\s*/g, "\n").split("\n").map(x => assText(x.toLocaleUpperCase("de-DE"))).join("\\N");
+      put("TxtO", 30, 30, 540, "\\fn" + (t.font === "Poppins Black" ? "Poppins Black" : A.font) + "\\fs" + A.size + "\\b0\\c&H00111111&\\bord0\\shad0", tt);
+    } else if (t.art === "stapel") {
+      const ls = String(t.text || "").replace(/\s*\|\s*/g, "\n").split("\n").filter(Boolean); const col = hexAss(t.color || style.hook2_color || "#F3ECA0");
+      const tt = ls.map((x, i) => "{\\fs" + Math.round(A.size * (i === 0 && ls.length > 1 ? 0.75 : 1.6)) + "}" + assText(x)).join("\\N");
+      put("TxtO", 60, 60, 110, "\\fn" + A.font + "\\b0\\c" + col + "\\bord0\\shad3\\4c&H000000&\\4a&HA0&", tt);
+    } else if (t.art === "kommentar") {
+      const nm = assText(t.text2 || "lisa.mueller"), body = "{\\b1}" + nm + "{\\b0\\c&H00808080&\\fs40}   ♥ by author{\\c&H00141414&\\fs" + A.size + "}\\N" + text;
+      const xs0 = t.x != null && isFinite(Number(t.x)) ? Math.round(Number(t.x) / 100 * 1080) : 170;
+      dlg(win.start, win.end, "TxtO", 0, 0, "\\an7" + animTags(kind === "schreiben" ? "pop" : kind, xs0 - 92, y + 4) + "\\p1\\bord3\\shad0\\1c&H00C9C9C9&\\3c&H00FFFFFF&", "m 35 0 b 54 0 70 16 70 35 b 70 54 54 70 35 70 b 16 70 0 54 0 35 b 0 16 16 0 35 0{\\p0}");
+      put("TxtB", 170, 120, 170, "\\fnPoppins\\fs" + A.size + "\\b0\\c&H00141414&\\4c&H00FFFFFF&\\4a&H00&\\bord22\\shad0", body);
+    } else if (t.art === "riesig") {
+      const tt = String(t.text || "").replace(/\s*\|\s*/g, "\n").split("\n").map(x => assText(x.toLocaleUpperCase("de-DE"))).join("\\N");
+      put("TxtO", 30, 30, 40, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c" + hexAss(t.color || "#FFF6C8") + "\\bord0\\shad4\\4c&H000000&\\4a&HA0&\\q2", tt);
+    } else if (t.art === "gedanke") {
+      put("TxtO", 70, 70, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H00FFFFFF&\\bord0\\shad2\\4c&H000000&\\4a&H90&\\q0", text);
+    } else if (t.art === "nachricht") {
+      put("TxtB", 170, 170, 540, "\\fnInter\\fs" + A.size + "\\b0\\c&H00111111&\\4c&H00FFFFFF&\\4a&H00&\\bord46\\shad0\\frz1.2", text);
+      put("TxtB", 170, 170, 540, "\\fnInter\\fs" + A.size + "\\b0\\c&H00111111&\\4c&H00EBE9E9&\\4a&H00&\\bord24\\shad0\\frz1.2", text);
     } else if (t.art === "chat") {
       // Chat-Eingabeleiste: dunkles Feld mit deinem Beispieltext, darüber der Name des Programms
       if (t.title) dlg(win.start, win.end, "TxtO", 0, 0, "\\an1\\pos(84," + (y - 40) + ")\\fnInter\\fs28\\b0\\c&H00C8C8C8&\\bord0\\shad0\\fad(150,200)", "✦ " + assText(t.title));
@@ -451,6 +504,7 @@ function textEvents(words, map, style) {
 
 // Hook-Titel oben: über dem Kopf, wenn dort Platz ist, sonst oben in der Sicherheitszone
 function lumAss(a) { const m = /&H00([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})&/i.exec(String(a || "")); if (!m) return 0; const b = parseInt(m[1], 16), g = parseInt(m[2], 16), rr = parseInt(m[3], 16); return (0.299 * rr + 0.587 * g + 0.114 * b) / 255; }
+function sideX(style) { const x = Number(style.cap_x); return Math.round((isFinite(x) && style.cap_x != null ? Math.max(3, Math.min(97, x)) : 6) / 100 * 1080); }
 function hexAss(hex) { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || "")); return m ? "&H00" + (m[3] + m[2] + m[1]).toUpperCase() + "&" : "&H00141414&"; }
 function hookTop(layout) {
   const z = layout && layout.zones;
@@ -558,10 +612,10 @@ function buildFfmpegArgs(o) {
       f.push("[hua][hul][hc1]maskedmerge[hu2]"); f.push("[hva][hvl][hc2]maskedmerge[hv2]"); uu = "hu2"; vv = "hv2"; }
     else f.push("[hm2]nullsink");
     f.push("[" + y + "][" + uu + "][" + vv + "]mergeplanes=0x001020:yuv420p[vhaut]"); v = "vhaut"; }
-  if (o.zooms.length || o.dauerzoom) {
+  if (o.zooms.length || o.dauerzoom || o.welle) {
     const zs = 0.10 * (o.zoomStrength || 1);
     const rs = o.zooms.map(z => typeof z === "number" ? { a: z, b: z + ZOOM_MIN_HOLD, t: "sanft" } : z);
-    const parts = rs.map(r => zoomTerm(r, zs)); if (o.dauerzoom) parts.push("0.08*min(1,it/" + Math.max(1, o.map.total).toFixed(3) + ")");
+    const parts = rs.map(r => zoomTerm(r, zs)); if (o.dauerzoom) parts.push("0.08*min(1,it/" + Math.max(1, o.map.total).toFixed(3) + ")"); if (o.welle) parts.push("0.07*(1-cos(2*PI*it/9))/2");
     const terms = parts.join("+"), pt = panTerms(rs);
     const fx = o.focus ? Math.max(0.2, Math.min(0.8, o.focus.x)) : 0.5, fy = o.focus ? Math.max(0.15, Math.min(0.7, o.focus.y)) : 0.5;
     f.push("[" + v + "]zoompan=z='1+" + terms + "':d=1:x='max(0,min(iw-iw/zoom," + fx.toFixed(3) + "*iw-iw/zoom/2" + pt.x + "))':y='max(0,min(ih-ih/zoom," + fy.toFixed(3) + "*ih-ih/zoom/2" + pt.y + "))':s=" + W + "x" + H + ":fps=" + FPS + "[vz]");
