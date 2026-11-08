@@ -9,7 +9,7 @@ function keptSegments(words, duration, pausen) {
   const kept = words.filter(w => !w.cut);
   if (!kept.length) return [];
   // "knapp" (2.14): Pausen ab 0,25 s raus und kürzere Ränder, wie bei Yapping-Reels
-  const tight = pausen === "knapp", PAD_IN = tight ? 0.08 : 0.12, PAD_OUT = tight ? 0.12 : 0.18, MAX_GAP = tight ? 0.25 : 0.45;
+  const sehr = pausen === "sehr", tight = pausen === "knapp" || sehr, PAD_IN = sehr ? 0.05 : tight ? 0.08 : 0.12, PAD_OUT = sehr ? 0.08 : tight ? 0.12 : 0.18, MAX_GAP = sehr ? 0.12 : tight ? 0.25 : 0.45;
   const segs = [];
   let cur = { s: Math.max(0, kept[0].s - PAD_IN), e: kept[0].e + PAD_OUT, first: words.indexOf(kept[0]) };
   for (let i = 1; i < kept.length; i++) {
@@ -200,7 +200,7 @@ function buildAss(words, map, style, layout) {
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     "Style: Cap," + st.font + "," + size + "," + (st.hollow ? "&HFF" + base.slice(4) : base) + ",&H000000FF&," + (st.hollow ? base : outlineCol) + "," + back + "," + (st.bold ? 1 : 0) + ",0,0,0,100,100," + (st.spacing || 0) + ",0," + border + "," + (st.outline || 0) + "," + (st.shadow || 0) + ",8,80,80," + top + ",1",
-    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + ({ klein: 52, gross: 82 }[style.hook_size] || 66) + "," + (style.hook_box === "white" ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
+    "Style: Hook," + (style.hook_font && BRAND_FONTS[style.hook_font] ? (style.hook_font === "Poppins" ? "Poppins ExtraBold" : style.hook_font) : (key === "marke" && BRAND_FONTS[style.brand_font] && style.brand_font !== "Poppins" ? style.brand_font : "Poppins ExtraBold")) + "," + Math.round(({ klein: 52, gross: 82 }[style.hook_size] || 66) * Math.max(0.5, Math.min(1.6, Number(style.hook_scale) || 1))) + "," + (style.hook_box === "white" ? "&H00141414&" : "&H00FFFFFF&") + ",&H000000FF&," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H00141414&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (style.hook_box === "black" ? "&H00141414&" : style.hook_box === "white" ? "&H00FFFFFF&" : style.hook_box === "none" ? "&H64000000&" : style.hook_box === "custom" ? hexAss(style.hook_bg) : hookAccent) + "," + (key === "marke" ? 1 : 0) + ",0,0,0,100,100,0,0," + (style.hook_box === "none" ? "1,3,2" : "3,20,0") + "," + ({ mitte: 5, unten: 2 }[style.hook_pos] || 8) + "," + (style.hook_wide ? "50,50," : "110,110,") + (style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Math.round(Number(style.hook_y) / 100 * 1920) : { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] != null ? { oben: 110, mitte: 0, unten: 520 }[style.hook_pos] : hookTop(layout)) + ",1",
     "Style: TxtO,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&H00141414&,&H64000000&,0,0,0,0,100,100,0,0,1,0,0,7,90,90,0,1",
     "Style: TxtB,Poppins ExtraBold,60,&H00FFFFFF&,&H000000FF&,&HFF000000&,&H00FFFFFF&,0,0,0,0,100,100,0,0,4,20,0,7,90,90,0,1",
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -579,7 +579,7 @@ function buildFfmpegArgs(o) {
     const labels = ["[a0]"];
     o.sounds.forEach((sd, i) => {
       const ms = Math.max(0, Math.round(sd.t * 1000));
-      f.push("[" + (sIdx + i) + ":a]aformat=sample_rates=44100:channel_layouts=stereo,volume=" + (sd.vol || 0.55) + ",adelay=" + ms + "|" + ms + "[s" + i + "]");
+      f.push("[" + (sIdx + i) + ":a]aformat=sample_rates=44100:channel_layouts=stereo,volume=" + ((sd.vol || 0.55) * (o.tonVol != null ? Number(o.tonVol) : 1)).toFixed(3) + ",adelay=" + ms + "|" + ms + "[s" + i + "]");
       labels.push("[s" + i + "]");
     });
     f.push(labels.join("") + "amix=inputs=" + labels.length + ":normalize=0:duration=first[aout]");

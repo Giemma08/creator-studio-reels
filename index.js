@@ -10,7 +10,7 @@ import SOUNDS from "./sounds.js";
 
 export class ReelRenderer extends Container {
   defaultPort = 8080;
-  sleepAfter = "20m";
+  sleepAfter = "5m";
   enableInternet = true;
 }
 
@@ -326,15 +326,15 @@ async function routeClipsMake(request, env, url) {
   const wordsIn = sp => W.filter(x => Number(x[1]) >= sp.start - 0.1 && Number(x[2]) <= sp.end + 0.1);
   const vocab = ((await readPrefs(env, s.user.id)).dict || []).map(x => x.b).join(", ").slice(0, 800), keys = {};
   if (!picks.length) return json({ error: "server" }, 400);
-  // Clip-Editor 1.2: bis zu 15 Clips pro Video sind im Durchsuchen enthalten; sie werden als Entwurf angelegt und erst beim Erstellen geschnitten
-  const FREE = 15, old = await db(env, "reel_jobs?source_id=eq." + src.id + "&select=id") || [];
-  const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 30;
+  // Preise November 2026: 5 Clips pro Video sind im Durchsuchen enthalten, jedes weitere Reel kostet „clip_extra“ (20 Credits)
+  const FREE = 5, old = await db(env, "reel_jobs?source_id=eq." + src.id + "&select=id") || [];
+  const cost = await db(env, "action_costs?action=eq.clip_extra&select=credits"); const per = cost && cost[0] ? Number(cost[0].credits) : 20;
   const paid = Math.max(0, old.length + picks.length - FREE), need = per * paid, st = creditStatus(s.acc);
   if (need && st.total < need) return json({ error: "credits", need, have: st.total }, 402);
   const style = sanitizeStyle(b.style), made = [], srcToken = await hmac(env, "internal|" + src.id), model = await modelFor(env, "fast");
   for (let k = 0; k < picks.length; k++) {
     const p = picks[k], charge = old.length + k + 1 > FREE;
-    if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: per, p_action: "reel_edit", p_note: "Clip aus Video (über 15)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
+    if (charge) { const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || s.user.id, p_amount: per, p_action: "clip_extra", p_note: "Weiteres Reel aus langem Video (über 5)" } }); const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) break; }
     const teile = p.vorne ? [p.vorne, { start: p.start, end: p.end }] : null, ws = (p.vorne ? wordsIn(p.vorne) : []).concat(wordsIn(p));
     const draft = ws.length >= 3, clipInfo = { start: p.start, end: p.end, layout, teile };
     const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: (p.titel || src.title || "Clip").slice(0, 120), status: "analyzing", kind: "reel", source_id: src.id, clip_start: p.start, clip_end: p.end, style: p.agent ? Object.assign({}, style, { agent: p.agent }) : style,
@@ -794,7 +794,7 @@ async function routeMood(request, env, url) {
   let trims = clips.map((c, k) => { const want = strom ? per[k].reduce((a, i) => a + secs[i], 0) : secs[0] / clips.length; return Math.max(2.5, Math.min(c.dur - 0.1, want || 4)); });
   if (strom && clips.length > lines.length) trims = trims.slice(0, lines.length);
   const used = clips.slice(0, trims.length);
-  const cost = await db(env, "action_costs?action=eq.mood_reel&select=credits"); const need = cost && cost[0] ? Number(cost[0].credits) : 5;
+  const cost = await db(env, "action_costs?action=eq.mood_reel&select=credits"); const need = cost && cost[0] ? Number(cost[0].credits) : 20;
   if (creditStatus(s.acc).total < need) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
   // Texte zeitlich verteilen
   const SC = Math.max(0.7, Math.min(1.6, Number(b.scale) || 1));
@@ -974,7 +974,7 @@ function sanitizeStyle(st) {
     cap_box_bg: hex(st.cap_box_bg) || null, cap_n: st.cap_n == null ? null : (Math.round(num(st.cap_n, 1, 5)) || null), cap_case: ["upper", "normal"].includes(st.cap_case) ? st.cap_case : null,
     size: ["klein", "mittel", "gross"].includes(st.size) ? st.size : "mittel", hook: st.hook !== false, captions: st.captions !== false,
     caption_style: CAPTION_STYLES.includes(st.caption_style) ? st.caption_style : "klar", look: LOOKS.includes(st.look) ? st.look : null, effects: sanitizeEffects(st.effects),
-    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, frame: sanitizeFrame(st.frame), music: st.music && typeof st.music === "object" && st.music.on && /^[a-z0-9]{6,24}$/.test(String(st.music.id || "")) ? { on: true, id: String(st.music.id), name: String(st.music.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(st.music.vol) ? st.music.vol : "mittel" } : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten", "frei"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_y: num(st.hook_y, 2, 88), hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: st.pausen === "knapp" ? "knapp" : null, kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
+    brand_font: BRAND_FONTS.includes(st.brand_font) ? st.brand_font : null, logo_on: !!st.logo_on, mood: st.mood ? true : undefined, frame: sanitizeFrame(st.frame), music: st.music && typeof st.music === "object" && st.music.on && /^[a-z0-9]{6,24}$/.test(String(st.music.id || "")) ? { on: true, id: String(st.music.id), name: String(st.music.name || "").slice(0, 80), vol: ["leise", "mittel", "kraeftig"].includes(st.music.vol) ? st.music.vol : "mittel" } : undefined, logo_pos: st.logo_pos === "unten" ? "unten" : undefined, hook_box: ["accent", "black", "white", "none", "custom"].includes(st.hook_box) ? st.hook_box : "accent", hook_bg: /^#[0-9a-fA-F]{6}$/.test(st.hook_bg || "") ? st.hook_bg : null, hook_pos: ["auto", "oben", "mitte", "unten", "frei"].includes(st.hook_pos) ? st.hook_pos : "auto", hook_y: num(st.hook_y, 2, 88), hook_size: ["klein", "normal", "gross"].includes(st.hook_size) ? st.hook_size : "normal", hook_wide: !!st.hook_wide, hook_dur: num(st.hook_dur, 1, 3600), tempo: num(st.tempo, 1, 1.25), pausen: ["knapp", "sehr"].includes(st.pausen) ? st.pausen : null, hook_scale: num(st.hook_scale, 0.5, 1.6), ton_vol: num(st.ton_vol, 0, 2), kontrast: num(st.kontrast, -2, 2), abdunkeln: num(st.abdunkeln, 0, 4), waerme: num(st.waerme, -2, 2), saettigung: num(st.saettigung, -2, 2), schaerfe: num(st.schaerfe, 0, 3),
     filter: ["warm", "kuehl", "hell", "kontrast", "sw", "vintage"].includes(st.filter) ? st.filter : null, vignette: !!st.vignette, koernung: !!st.koernung, dauerzoom: !!st.dauerzoom, ende: sanitizeEnde(st.ende), agent: sanitizeAgent(st.agent), cover: st.cover && typeof st.cover.key === "string" && /^jobs\/[0-9a-f-]{36}\/img-[a-z0-9]{8}\.(jpg|jpeg|png|webp)$/i.test(st.cover.key) ? { key: st.cover.key, layout: ["oben", "mitte", "unten"].includes(st.cover.layout) ? st.cover.layout : "oben", t: Number(st.cover.t) || 0, title: String(st.cover.title || "").slice(0, 80) } : null, stil_paket: ["walk", "news", "tipps", "story"].includes(st.stil_paket) ? st.stil_paket : null, stimme: ["sanft", "stark"].includes(st.stimme) ? st.stimme : null, cap_round: st.cap_round === false ? false : null, caption: typeof st.caption === "string" ? st.caption.slice(0, 2200) : null, hashtags: Array.isArray(st.hashtags) ? st.hashtags.map(h => String(h).slice(0, 40)).slice(0, 15) : null,
     split: st.split && imgKey(st.split.key) ? { key: st.split.key, dauer: Math.max(1.5, Math.min(5, Number(st.split.dauer) || 3)) } : null,
     titelkarte: st.titelkarte && typeof st.titelkarte === "object" && (String(st.titelkarte.titel || "").trim() || (Array.isArray(st.titelkarte.keys) && st.titelkarte.keys.some(imgKey))) ? { titel: String(st.titelkarte.titel || "").trim().slice(0, 60), keys: (Array.isArray(st.titelkarte.keys) ? st.titelkarte.keys : []).filter(imgKey).slice(0, 3), dauer: Math.max(1, Math.min(4, Number(st.titelkarte.dauer) || 2)) } : null, texts: sanitizeTexts(st.texts), hook_font: BRAND_FONTS.includes(st.hook_font) ? st.hook_font : null,
@@ -1202,7 +1202,7 @@ async function routeInternal(request, env, url) {
       if (b.phase === "analyze" && !(j.clips && j.clips.source_id && !j.clips.charged)) {
         const act = j.style && j.style.mood ? "mood_reel" : "reel_edit"; // Text-Reels kosten 5, normale Reels 30
         const cost = await db(env, "action_costs?action=eq." + act + "&select=credits");
-        await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: cost && cost[0] ? Number(cost[0].credits) : (act === "mood_reel" ? 5 : 30), p_action: act } });
+        await db(env, "rpc/refund_credits", { method: "POST", body: { p_user: j.user_id, p_amount: cost && cost[0] ? Number(cost[0].credits) : (act === "mood_reel" ? 20 : 30), p_action: act } });
       }
       return new Response("ok");
     }
