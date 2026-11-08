@@ -220,7 +220,8 @@ function buildAss(words, map, style, layout) {
   }
   // Schlüsselwörter oben (Vorlage „Expertin erklärt“): betonte Wörter groß in der Akzentfarbe
   if (style.kw_top) { const kacc = hexAss(style.accent || "#E6007E"), hEnd = style.hook !== false && style.hook_titel ? tkd + (Number(style.hook_dur) || 3.2) : 0; let lastEnd = -1;
-    words.forEach(w => { if (w.cut || w.hide || !w.emph) return; const a = map(w.s), b = Math.min(map.total, map(w.e) + 0.8); if (a < hEnd || a < lastEnd || b - a < 0.3) return; lastEnd = b;
+    const busyTop = []; try { textEvents(words, map, style); (textEvents.taken || new Map()).forEach((v, t) => { if (v && t && t.art !== "sticker" && (t.art === "liste" || (isFinite(Number(t.y)) && t.y != null ? Number(t.y) : (TEXT_ARTS[t.art] || {}).y || 50) < 35)) busyTop.push([v.start, v.end]); }); } catch (e) {} const es0 = endeStart(style, map.total);
+    words.forEach(w => { if (w.cut || w.hide || !w.emph) return; const a = map(w.s), b = Math.min(map.total, map(w.e) + 0.8); if (a < hEnd || a < lastEnd || b - a < 0.3 || (es0 != null && b > es0) || busyTop.some(r => a < r[1] && b > r[0])) return; lastEnd = b;
       lines.push("Dialogue: 2," + assTime(a) + "," + assTime(b) + ",TxtO,,0,0,0,,{\\an8\\pos(540,250)\\fnArchivo Black\\fs104\\b0\\c" + kacc + "\\bord0\\shad5\\4c&H000000&\\4a&H80&\\fad(80,150)}" + assText(String(w.w).replace(/[.,!?;:„“"]/g, "").toLocaleUpperCase("de-DE"))); }); }
   if (style.captions === false) { textEvents(words, map, style).forEach(l => lines.push(l)); return lines.join("\n") + "\n"; }
   const hidden = (style.hide_captions || []).map(r => [Number(r[0]), Number(r[1])]);
@@ -346,15 +347,35 @@ function endeTexts(style, total) {
     if (e.kommentar_text) out.push({ art: "ende_text", text: e.kommentar_text, y: L.k3, anim: "hoch", abs }); }
   return out;
 }
+// Platzregel (2.73): Oben, Mitte und unten steht nie mehr als eine Einblendung gleichzeitig.
+// Die Überschrift und das Ende des Reels haben Vorrang, später beginnende Texte rücken nach hinten oder fallen weg.
+function zoneOf(t, A) { if (t.art === "sticker" || t.art === "poesie" || t.art === "karte_titel") return null; if (/^ende_/.test(t.art)) return null; if (t.art === "liste") return "oben";
+  const y = isFinite(Number(t.y)) && t.y != null ? Number(t.y) : A.y; return y < 35 ? "oben" : y < 62 ? "mitte" : "unten"; }
+function resolveWindows(items, style, total, hookWin) {
+  const taken = { oben: [], mitte: [], unten: [] }, out = new Map();
+  if (hookWin) { const hy = style.hook_pos === "frei" && isFinite(Number(style.hook_y)) ? Number(style.hook_y) : style.hook_pos === "mitte" ? 45 : style.hook_pos === "unten" ? 70 : 12; taken[hy < 35 ? "oben" : hy < 62 ? "mitte" : "unten"].push([hookWin.start, hookWin.end]); }
+  const es = endeStart(style, total); if (es != null) ["oben", "mitte", "unten"].forEach(z => taken[z].push([es, total]));
+  items.slice().sort((a, b) => a.win.start - b.win.start).forEach(it => { const z = it.zone; if (!z) { out.set(it.t, it.win); return; }
+    let s = it.win.start, e = it.win.end; const dur = e - s; let guard = 0;
+    while (guard++ < 8) { const hit = taken[z].find(r => s < r[1] - 0.05 && e > r[0] + 0.05); if (!hit) break; s = hit[1] + 0.1; e = Math.min(total, s + dur); }
+    if (e - s < 1.0 || guard >= 8) { out.set(it.t, null); return; } taken[z].push([s, e]); out.set(it.t, { start: s, end: e }); });
+  return out;
+}
 function textEvents(words, map, style) {
   const out = [], acc = hexAss(style.accent || "#E6007E"), lang = style.lang || "de";
   const tk = titelkarteDur(style);
   const list = (Array.isArray(style.texts) ? style.texts.slice(0, style.mood || style.texts.some(t => t && t.art === "poesie") ? 40 : 12) : []).concat(endeTexts(style, map.total)).concat(tk && style.titelkarte.titel ? [{ art: "karte_titel", text: style.titelkarte.titel, y: 66, anim: "einblenden", abs: { start: 0, end: tk } }] : []);
   const dlg = (t0, t1, sty, mL, mR, tags, txt) => out.push("Dialogue: 2," + assTime(t0) + "," + assTime(t1) + "," + sty + ",," + mL + "," + mR + ",0,,{" + tags + "}" + txt);
   const shape = (t0, t1, kind, x, y, name, col, extra) => dlg(t0, t1, "TxtO", 0, 0, "\\an7" + animTags(kind, x, y) + "\\p1\\bord" + (extra || 0) + "\\shad0\\1c" + col + "\\3c&H141414&", SHAPES[name] + "{\\p0}");
+  const hookWin = style.hook !== false && style.hook_titel ? { start: tk, end: Math.min(map.total, tk + (Number(style.hook_dur) || 3.2)) } : null;
+  const items = []; list.forEach(t => { if (!t || t.off || !TEXT_ARTS[t.art]) return; const A = TEXT_ARTS[t.art];
+    const w0 = t.abs || (t.at != null ? { start: map(Number(t.at)), end: Math.min(map.total, map(Number(t.at) + (Number(t.dur) || 2.5))) } : textWindow(t, words, map)); if (!w0 || w0.end - w0.start < 0.2) return;
+    items.push({ t, win: w0, zone: /^ende_/.test(t.art) || t.abs ? null : zoneOf(t, A) }); });
+  const WIN = resolveWindows(items, style, map.total, hookWin);
+  textEvents.taken = WIN;
   list.forEach(t => {
     if (!t || t.off || !TEXT_ARTS[t.art]) return;
-    const A = TEXT_ARTS[t.art], win = t.abs || (t.at != null ? { start: map(Number(t.at)), end: Math.min(map.total, map(Number(t.at) + (Number(t.dur) || 2.5))) } : textWindow(t, words, map)); if (!win || win.end - win.start < 0.2) return;
+    const A = TEXT_ARTS[t.art], win = WIN.get(t); if (!win || win.end - win.start < 0.2) return;
     const kind = TEXT_ANIMS.includes(t.anim) ? t.anim : "einblenden";
     const y = Math.round((isFinite(Number(t.y)) ? Number(t.y) : A.y) / 100 * H);
     let text = t.art === "poesie" ? String(t.text || "").replace(/[{}\\]/g, "").trim() : assText(t.text || ""); if (!text && t.art !== "liste") return;
@@ -394,8 +415,8 @@ function textEvents(words, map, style) {
       put("TxtO", 140, 140, 540, "\\fnCaveat\\fs74\\b0\\c&H00FFFFFF&\\bord0\\shad2\\4c&H000000&\\4a&H80&\\frz6", text);
       if (t.pfeil) shape(win.start, win.end, "einblenden", 420, y + 86, "pfeilunten", "&H00FFFFFF&", 2);
     } else if (t.art === "notiz") {
-      put("TxtO", 120, 120, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H004CC9F2&\\3c&H141414&\\bord4\\shad0\\frz-4", text);
-      shape(win.start, win.end, kind === "schreiben" ? "einblenden" : kind, 504, y + A.size + 14, "pfeilunten", "&H004CC9F2&", 3);
+      put("TxtO", 120, 120, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c" + acc + "\\3c&H141414&\\bord4\\shad0\\frz-4", text);
+      shape(win.start, win.end, kind === "schreiben" ? "einblenden" : kind, 504, y + A.size + 14, "pfeilunten", acc, 3);
     } else if (t.art === "ende_klein") {
       put("TxtB", 120, 120, 540, "\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H001A1A1A&\\4c&H00FFFFFF&\\4a&H00&\\bord18\\shad0", text);
     } else if (t.art === "ende_gross") {
@@ -420,7 +441,7 @@ function textEvents(words, map, style) {
       items.forEach((it, i) => {
         const ti = win.start + i * step, tn = i + 1 < n ? win.start + (i + 1) * step : win.end, yi = y + i * 92;
         const base = "\\an7\\fn" + A.font + "\\fs" + A.size + "\\b0\\c&H001A1A1A&\\bord16\\shad0\\4a&H00&";
-        dlg(ti, tn, "TxtB", 162, 90, base + animTags(kind === "schreiben" || kind === "marker" ? "einblenden" : kind, 162, yi).replace(/\\fad\(\d+,\d+\)/, "\\fad(" + (kind === "pop" ? 60 : 150) + ",0)") + "\\4c&H004CC9F2&", it);
+        dlg(ti, tn, "TxtB", 162, 90, base + animTags(kind === "schreiben" || kind === "marker" ? "einblenden" : kind, 162, yi).replace(/\\fad\(\d+,\d+\)/, "\\fad(" + (kind === "pop" ? 60 : 150) + ",0)") + "\\4c" + acc + "\\c" + (lumAss(acc) > 0.6 ? "&H001A1A1A&" : "&H00FFFFFF&"), it);
         if (i + 1 < n) { dlg(tn, win.end, "TxtB", 162, 90, base + "\\pos(162," + yi + ")\\fad(0,200)\\4c&H00FFFFFF&", it); shape(tn, win.end, "einblenden", 76, yi + 4, "haken", acc, 3); }
       });
     }
@@ -429,6 +450,7 @@ function textEvents(words, map, style) {
 }
 
 // Hook-Titel oben: über dem Kopf, wenn dort Platz ist, sonst oben in der Sicherheitszone
+function lumAss(a) { const m = /&H00([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})&/i.exec(String(a || "")); if (!m) return 0; const b = parseInt(m[1], 16), g = parseInt(m[2], 16), rr = parseInt(m[3], 16); return (0.299 * rr + 0.587 * g + 0.114 * b) / 255; }
 function hexAss(hex) { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || "")); return m ? "&H00" + (m[3] + m[2] + m[1]).toUpperCase() + "&" : "&H00141414&"; }
 function hookTop(layout) {
   const z = layout && layout.zones;

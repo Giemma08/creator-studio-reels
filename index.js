@@ -877,6 +877,7 @@ Erlaubte Handgriffe:
 {"op":"toene","an":false}
 {"op":"logo","an":true}
 {"op":"effekt","i":0,"aus":true,"entfernen":false,"text":""}
+Regeln für Einblendungen: Setze nur, was zum gesprochenen Inhalt passt, und erfinde keine Fakten. Erfinde nie ein Kommentar-Stichwort, ein Angebot oder ein Freebie: Einen Kommentar-Aufruf setzt du nur, wenn die Nutzerin ihn ausdrücklich verlangt oder im Video selbst etwas zum Zusenden anbietet, und dann ausschließlich über op ende, nie als Text-Einblendung. In den ersten 3 Sekunden steht oben die Überschrift: setze dort oben nichts anderes. Pro Bereich (oben, Mitte, unten) immer nur eine Einblendung gleichzeitig.
 Antworte NUR mit JSON: {"ops":[...],"antwort":"ein kurzer, freundlicher Satz, was du gemacht hast"}. Ist der Wunsch unklar oder nicht machbar (zum Beispiel Musik, Übergänge oder Einblendungen, die es noch nicht gibt), gib "ops":[] und sag es ehrlich in "antwort". Erfinde keine Inhalte.`;
 
 async function routeCmd(request, env) {
