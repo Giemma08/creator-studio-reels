@@ -16,7 +16,7 @@ export class ReelRenderer extends Container {
 
 const LANG_NAMES = { de: "Deutsch", en: "English", fr: "Français", it: "Italiano", es: "Español", pt: "Português", nl: "Nederlands", sv: "Svenska", ca: "Català" };
 const MAX_BYTES = 4 * 1024 * 1024 * 1024;
-const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg", "check.jpg"];
+const OUT_NAMES = ["thumb.jpg", "final.mp4", "final.jpg", "check.jpg", "preview.mp4"];
 const IMG_TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 
 export default {
@@ -25,7 +25,7 @@ export default {
     ctx.waitUntil((async () => {
       const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
       const old = await db(env, "reel_jobs?input_deleted=eq.false&created_at=lt." + cutoff + "&status=in.(done,ready,error)&select=id&limit=200") || [];
-      for (const j of old) { try { await env.REELS_BUCKET.delete(keyOf(j.id, "input")); } catch (e) {} await patchJob(env, j.id, { input_deleted: true }); }
+      for (const j of old) { try { await env.REELS_BUCKET.delete(keyOf(j.id, "input")); await env.REELS_BUCKET.delete(keyOf(j.id, "preview.mp4")); } catch (e) {} await patchJob(env, j.id, { input_deleted: true }); }
     })().catch(e => console.log("Aufräumen", e && e.message)));
   },
   async fetch(request, env) {
@@ -243,6 +243,7 @@ async function publicJob(env, origin, j, full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
     const dsrc = j.clips && j.clips.draft && j.clips.source_id; out.draft = !!dsrc;
     out.input = await mediaUrl(env, origin, dsrc ? j.clips.source_id : j.id, "input");
+    if (!dsrc && j.status !== "uploading" && j.status !== "analyzing") out.preview = await mediaUrl(env, origin, j.id, "preview.mp4");
     if (j.status === "done") { out.final = await mediaUrl(env, origin, j.id, "final.mp4"); out.check = await mediaUrl(env, origin, j.id, "check.jpg"); out.report = Array.isArray(j.report) ? j.report : []; }
     const imgs = {};
     for (const w of (j.words || [])) if (w && w.image && w.image.key && !imgs[w.image.key]) imgs[w.image.key] = await mediaUrl(env, origin, j.id, w.image.key.split("/").pop());

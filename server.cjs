@@ -181,6 +181,10 @@ async function analyze(job) {
   const thumb = path.join(dir, "thumb.jpg");
   await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(Math.min(1, info.duration / 2)), "-i", input, "-frames:v", "1", "-vf", "scale=360:-2", thumb]);
   await upload(job.base + "/internal/reels/output/" + job.id + "/thumb.jpg", hdr(job), thumb, "image/jpeg");
+  // Leichte Vorschau-Datei (2.76): kleiner, schnell startend, Schlüsselbild alle 0,5 s – damit die Vorschau im Editor flüssig springt
+  try { const pv = path.join(dir, "preview.mp4");
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input, "-vf", "scale='if(gt(iw,ih),960,-2)':'if(gt(iw,ih),-2,960)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "15", "-keyint_min", "15", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", pv]);
+    await upload(job.base + "/internal/reels/output/" + job.id + "/preview.mp4", hdr(job), pv, "video/mp4"); } catch (e) { console.log("Vorschau-Datei übersprungen", String(e.message).slice(0, 200)); }
   return { status: "ready", duration: info.duration, has_audio: info.hasAudio, words, hook_titel: plan.hook_titel || "", bild_ideen: plan.bild_ideen || [], effekte: Array.isArray(plan.effekte) ? plan.effekte.slice(0, 3) : [] };
 }
 

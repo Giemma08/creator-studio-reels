@@ -219,6 +219,7 @@ function buildAss(words, map, style, layout) {
   if (style.hook !== false && style.hook_titel) {
     const hd = Number(style.hook_dur); const end = Math.min(tkd + (isFinite(hd) && hd >= 1 ? hd : 3.2), map.total);
     let htx = assText(caseOf({}, style.hook_upper ? String(style.hook_titel).toLocaleUpperCase("de-DE") : style.hook_titel));
+    if (!style.hook_zwei) htx = htx.replace(/\s*\|\s*/g, "\\N");
     if (style.hook_zwei) { const raw = String(style.hook_titel).replace(/\s*\|\s*/g, "\n"); let l1, l2; if (raw.includes("\n")) { const p = raw.split("\n"); l1 = p.slice(0, -1).join(" "); l2 = p[p.length - 1]; } else { const ws = raw.split(/\s+/); const k = Math.max(1, ws.length - 2); l1 = ws.slice(0, k).join(" "); l2 = ws.slice(k).join(" "); }
       htx = assText(l1) + "\\N{\\c" + hexAss(style.hook2_color || "#F3ECA0") + "\\fscx125\\fscy125}" + assText(l2); }
     if (style.hook_anim === "schreiben" && !style.hook_zwei) { const te = Math.min(end - 0.3, tkd + Math.min(1.8, 0.06 * String(style.hook_titel).length));
