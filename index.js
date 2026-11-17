@@ -238,6 +238,11 @@ async function publicJob(env, origin, j, full) {
   const out = { id: j.id, created_at: j.created_at, updated_at: j.updated_at, title: j.title, status: j.status, duration: j.duration, renders: j.renders, length: j.length, error: j.error, kind: j.kind || "reel" };
   if (j.kind === "transcript") { out.has_text = !!j.transcript; return out; }
   if (j.kind === "clips") { out.thumb = ""; if (full) { out.clips = j.clips || {}; out.input = await mediaUrl(env, origin, j.id, "input"); } return out; }
+  if (j.kind === "fertig") {
+    out.thumb = j.status === "done" ? await mediaUrl(env, origin, j.id, "thumb.jpg") : "";
+    if (full) { out.input = await mediaUrl(env, origin, j.id, "input"); if (j.status === "done") out.final = out.input; }
+    return out;
+  }
   out.thumb = j.status !== "uploading" && j.status !== "analyzing" && j.status !== "error" ? await mediaUrl(env, origin, j.id, j.status === "done" ? "final.jpg" : "thumb.jpg") : "";
   if (full) {
     Object.assign(out, { words: j.words, hook_titel: j.hook_titel, bild_ideen: j.bild_ideen, style: j.style, has_audio: j.has_audio });
@@ -269,16 +274,21 @@ async function routeStart(request, env) {
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   if (!(Number(b.size) > 0) || Number(b.size) > MAX_BYTES) return json({ error: "file_size" }, 400);
   const isTranscript = b.kind === "transcript", isClips = b.kind === "clips", isLong = isTranscript || isClips;
+  const isFertig = b.kind === "fertig"; // fertiges Video, wird nur abgelegt und eingeplant
   const lim = tierLimits(s.acc);
   if (isLong) {
     if (Number(b.minutes) > lim.minutes) return json({ error: "too_long_plan", limit_min: lim.minutes, plan: lim.plan }, 403);
     if (Number(b.size) > lim.bytes) return json({ error: "file_size_plan", limit_gb: lim.bytes / 1073741824, plan: lim.plan }, 403);
+  } else if (isFertig) {
+    if (Number(b.size) > lim.bytes) return json({ error: "file_size_plan", limit_gb: lim.bytes / 1073741824, plan: lim.plan }, 403);
   } else if (Number(b.size) > 1.5 * 1024 * 1024 * 1024) return json({ error: "file_size" }, 400);
-  const cost = await db(env, "action_costs?action=eq." + (isClips ? "clips_min" : isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
-  const per = cost && cost[0] ? Number(cost[0].credits) : (isClips ? 2 : isLong ? 1 : 30);
-  const need = isLong ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
-  const st = creditStatus(s.acc);
-  if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
+  if (!isFertig) {
+    const cost = await db(env, "action_costs?action=eq." + (isClips ? "clips_min" : isTranscript ? "transcribe_min" : "reel_edit") + "&select=credits");
+    const per = cost && cost[0] ? Number(cost[0].credits) : (isClips ? 2 : isLong ? 1 : 30);
+    const need = isLong ? Math.ceil(Math.max(1, Math.min(240, Number(b.minutes) || 60)) * per) : per;
+    const st = creditStatus(s.acc);
+    if (st.total < need) return json({ error: "credits", need, have: st.total }, 402);
+  }
   // Speicher des Tarifs prüfen
   try {
     const f = (s.acc.plans && s.acc.plans.features) || {};
@@ -286,7 +296,7 @@ async function routeStart(request, env) {
     const u = await db(env, "rpc/storage_usage", { method: "POST", body: { p_user: s.user.id } });
     if ((Number(Array.isArray(u) ? u[0] : u) || 0) + Number(b.size) > limit) return json({ error: "storage_full" }, 403);
   } catch (e) {}
-  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isClips ? "clips" : isTranscript ? "transcript" : "reel", input_bytes: Math.round(Number(b.size) || 0) } });
+  const rows = await db(env, "reel_jobs", { method: "POST", prefer: "return=representation", body: { user_id: s.user.id, title: String(b.name || "Reel").slice(0, 120), status: "uploading", kind: isFertig ? "fertig" : isClips ? "clips" : isTranscript ? "transcript" : "reel", input_bytes: Math.round(Number(b.size) || 0) } });
   const job = rows[0];
   const mp = await env.REELS_BUCKET.createMultipartUpload(keyOf(job.id, "input"), { httpMetadata: { contentType: String(b.type || "video/mp4").slice(0, 60) } });
   await patchJob(env, job.id, { upload_id: mp.uploadId });
@@ -501,6 +511,11 @@ async function routeComplete(request, env, url) {
     try { await startContainer(env, url.origin, j, "transcribe", { openai_key: env.OPENAI_API_KEY, lang: s.acc.content_lang || "de", max_seconds: tierLimits(s.acc).minutes * 60 + 60 }); }
     catch (e) { await patchJob(env, j.id, { status: "error", error: "Die Werkstatt war nicht erreichbar. Bitte versuch es gleich noch einmal." }); return json({ error: "render_unavailable" }, 503); }
     return json({ ok: true });
+  }
+  // Fertiges Video: nichts schneiden, nichts berechnen, direkt bereit zum Einplanen
+  if (j.kind === "fertig") {
+    await patchJob(env, j.id, { status: "done", upload_id: null, length: Math.max(0, Math.min(36000, Math.round(Number(b.length) || 0))), error: null });
+    return json({ ok: true, fertig: true });
   }
   // Credits abbuchen
   const cost = await db(env, "action_costs?action=eq.reel_edit&select=credits");
@@ -1028,6 +1043,7 @@ async function routeRender(request, env, url) {
   const b = await readJson(request); if (!b) return json({ error: "server" }, 400);
   const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
   if (j && j.input_deleted) return json({ error: "input_deleted" }, 410);
+  if (j.kind === "fertig") return json({ error: "busy", detail: "Dieses Video wurde ohne Bearbeitung übernommen. Es kann direkt eingeplant werden." }, 409);
   const moodJob = !!(j.style && (j.style.mood || (j.style.texts || []).some(t => t && t.art === "poesie")));
   // Entwurf aus langem Video: Hängt die Vorbereitung (Titel, Zooms, Töne) länger als 90 Sekunden, trotzdem erstellen, die Wörter sind ja da
   const age = Date.now() - new Date(j.updated_at || j.created_at || 0).getTime();
@@ -1091,7 +1107,7 @@ async function routeImage(request, env) {
   const f = form.get("file");
   if (!f || typeof f === "string" || !IMG_TYPES[f.type]) return json({ error: "file_type" }, 400);
   if (f.size > 8 * 1024 * 1024) return json({ error: "file_size" }, 400);
-  const name = "img-" + crypto.randomUUID().slice(0, 8) + "." + IMG_TYPES[f.type];
+  const name = String(form.get("as") || "") === "thumb" ? "thumb.jpg" : "img-" + crypto.randomUUID().slice(0, 8) + "." + IMG_TYPES[f.type];
   await env.REELS_BUCKET.put(keyOf(j.id, name), await f.arrayBuffer(), { httpMetadata: { contentType: f.type } });
   return json({ key: keyOf(j.id, name), url: await mediaUrl(env, new URL(request.url).origin, j.id, name) });
 }
