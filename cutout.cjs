@@ -97,6 +97,15 @@ function composeArgs(o) {
     f.push("[" + bgIdx + ":v]scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + ",setsar=1,fps=30[bg0]");
     if (o.fx) f.push(fxIn.slice(0, -1), "[bg0][fx]overlay=0:0[bg]"); else f.push("[bg0]null[bg]");
     f.push("[0:v][m]alphamerge[p]", "[bg][p]overlay=0:0,format=yuv420p[v]");
+  } else if (o.type === "raum") {
+    // Raum-Wechsel: du bleibst, wie du bist; dahinter ein Raum im Markenlook, leicht unscharf wie bei einer echten Kamera
+    args.push("-loop", "1", "-t", o.d.toFixed(2), "-i", o.bgFile);
+    const bgIdx = o.fx ? 3 : 2;
+    f.length = 0;
+    f.push("[1:v]scale=" + W + ":" + H + ",format=gray,setsar=1,gblur=sigma=1.1[m]");
+    f.push("[" + bgIdx + ":v]scale=" + W + ":" + H + ":force_original_aspect_ratio=increase,crop=" + W + ":" + H + ",setsar=1,fps=30,gblur=sigma=2.4,eq=saturation=0.96,noise=alls=4:allf=t[bg0]");
+    if (o.fx) f.push(fxIn.slice(0, -1), "[bg0][fx]overlay=0:0[bg]"); else f.push("[bg0]null[bg]");
+    f.push("[0:v]setsar=1[pv]", "[pv][m]alphamerge[p]", "[bg][p]overlay=0:0,format=yuv420p[v]");
   } else if (o.type === "greenscreen") {
     // Hintergrund: Verlauf in der Markenfarbe; Person verkleinert unten in der Mitte
     const c = String(o.accent || "#E6007E").replace("#", "0x");

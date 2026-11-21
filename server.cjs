@@ -385,8 +385,8 @@ async function renderCore(job) {
         await run("ffmpeg", ["-y", "-loglevel", "error", "-i", seg, "-vf", "scale=720:1280", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", small]);
         await C.matte(job.replicate_key, small, mask);
         let fxFile = null, bgFile = null;
-        if (it.fx.type === "bildwand") { if (!it.fx.bild) throw new Error("kein Bild für die Bildwand"); bgFile = path.join(dir, "wand" + i); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(it.fx.bild), hdr(job), bgFile); }
-        const needsLayer = !["greenscreen", "popout", "bildwand"].includes(it.fx.type) || (it.fx.titel && it.fx.type !== "bildwand");
+        if (it.fx.type === "bildwand" || it.fx.type === "raum") { if (!it.fx.bild) throw new Error("kein Bild für " + it.fx.type); bgFile = path.join(dir, "wand" + i); await download(job.base + "/internal/reels/asset/" + job.id + "?key=" + encodeURIComponent(it.fx.bild), hdr(job), bgFile); }
+        const needsLayer = !["greenscreen", "popout", "bildwand", "raum"].includes(it.fx.type) || (it.fx.titel && it.fx.type !== "bildwand" && it.fx.type !== "raum");
         if (needsLayer) {
           E.writeProject(fxDir, it, { accent: style.accent, locale: job.locale || LOCALES[job.lang] || "de-DE", fontFile: R.BRAND_FONTS[style.brand_font] || "", head: layout && layout.head }, ASSET_DIR);
           await run(HF_BIN, ["render", fxDir, "--format", "webm", "-o", path.join(fxDir, "out.webm"), "--no-browser-gpu", "--workers", String(Math.max(1, Math.min(4, require("os").cpus().length))), "--quiet"]);

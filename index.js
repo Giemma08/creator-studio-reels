@@ -73,6 +73,7 @@ export default {
       if (p === "/api/reels/profil" && m === "POST") return await routeProfil(request, env, url);
       if (p === "/api/reels/render" && m === "POST") return await routeRender(request, env, url);
       if (p === "/api/reels/image" && m === "POST") return await routeImage(request, env);
+      if (p === "/api/reels/raum" && (m === "GET" || m === "POST")) return await routeRaum(request, env, url, m);
       return json({ error: "not_found" }, 404);
     } catch (e) {
       console.log("Serverfehler:", e && e.stack ? e.stack : String(e));
@@ -541,12 +542,12 @@ const BRAND_FONTS = ["Playfair Display", "Inter", "Outfit", "DM Sans", "Lora", "
 const CAPTION_STYLES = ["zeig", "klartext", "rosa", "hand", "brust", "farbbalken", "einwort", "marke", "klar", "box", "elegant", "leise", "gross", "plakat", "handschrift", "kino", "pop", "karaoke", "neon", "editorial", "mono", "pastell", "kontur", "magazin"];
 const LOOKS = ["business", "warm", "editorial", "energie", "kino", "magazin"];
 const CAP_FONTS = ["Poppins", "Montserrat", "Inter", "DM Sans", "Outfit", "Space Grotesk", "Syne", "Anton", "Bebas Neue", "Archivo Black", "Playfair Display", "DM Serif Display", "Lora", "Cormorant Garamond", "Abril Fatface", "Caveat Brush", "Pacifico", "Space Mono", "Caveat", "Dancing Script", "Amatic SC", "Kalam", "Shadows Into Light", "Indie Flower", "Josefin Sans", "Quicksand", "Instrument Serif", "Nothing You Could Do"];
-const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif", "hinter", "spotlight", "greenscreen", "popout", "lichtaus", "bildwand"];
-const CUTOUT_TYPES = ["hinter", "spotlight", "greenscreen", "popout", "lichtaus", "bildwand"];
+const FX_TYPES = ["checkliste", "zahl", "kommentar", "karte", "zitat", "kapitel", "diagramm", "vergleich", "nachricht", "emoji", "gif", "hinter", "spotlight", "greenscreen", "popout", "lichtaus", "bildwand", "raum"];
+const CUTOUT_TYPES = ["hinter", "spotlight", "greenscreen", "popout", "lichtaus", "bildwand", "raum"];
 function sanitizeEffects(list) {
   const s = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").slice(0, n);
   const i = v => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n < 3000 ? n : undefined; };
-  return (Array.isArray(list) ? list : []).filter(x => x && FX_TYPES.includes(x.type)).slice(0, 4).map(x => {
+  return (Array.isArray(list) ? list : []).filter(x => x && FX_TYPES.includes(x.type)).slice(0, 8).map(x => {
     const o = { type: x.type, von: i(x.von), bis: i(x.bis), wort: i(x.wort) };
     if (x.type === "checkliste") { o.titel = s(x.titel, 40); o.punkte = (Array.isArray(x.punkte) ? x.punkte : []).slice(0, 4).map(p => ({ text: s(p && p.text, 40), wort: i(p && p.wort) })).filter(p => p.text); }
     if (x.type === "zahl") { o.wert = s(x.wert, 16); o.praefix = s(x.praefix, 4); o.suffix = s(x.suffix, 6); o.label = s(x.label, 40); }
@@ -564,6 +565,7 @@ function sanitizeEffects(list) {
     if (x.type === "greenscreen") { o.titel = s(x.titel, 50); o.text = s(x.text, 60); }
     if (x.type === "popout") { o.titel = s(x.titel, 40); }
     if (x.type === "bildwand") { o.bild = /^jobs\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,80}$/.test(String(x.bild || "")) ? String(x.bild) : ""; o.vorschau = /^https:\/\//.test(String(x.vorschau || "")) ? String(x.vorschau).slice(0, 600) : ""; }
+    if (x.type === "raum") { o.bild = /^jobs\/[0-9a-f-]{36}\/img-[A-Za-z0-9._-]{1,80}$/.test(String(x.bild || "")) ? String(x.bild) : ""; o.vorschau = /^https:\/\//.test(String(x.vorschau || "")) ? String(x.vorschau).slice(0, 600) : ""; o.name = s(x.name, 40); }
     if (x.type === "lichtaus") { o.text = s(x.text, 12); }
     if (x.type === "gif") {
       const giphy = u => /^https:\/\/media\d?\.giphy\.com\/[A-Za-z0-9_\/.?=&-]+$/.test(String(u || "")) ? String(u) : "";
@@ -1098,6 +1100,71 @@ async function routeRender(request, env, url) {
     return json({ error: "render_unavailable" }, 503);
   }
   return json({ ok: true, credits });
+}
+
+// ---------------- Raum-Wechsel (2.81): Hintergründe im Markenlook für Reels ----------------
+// KIRA entwirft aus dem Look der Marke feste Räume. Ein Raum wird einmal erzeugt, liegt in der Raum-Bibliothek der Nutzerin
+// und kann in jedem Reel verwendet werden. Im Reel wird die Person freigestellt und vor den Raum gesetzt (Profi-Effekt).
+const RAUM_SETS = [
+  { id: "studio", name: "Ruhiges Studio", text: "ein ruhiger, aufgeräumter Raum: glatte Wand in {hell}, ein schlichtes Holzregal mit wenigen Büchern und einer Vase, eine große Grünpflanze am Rand, kleine Akzente in {haupt}" },
+  { id: "salon", name: "Salon", text: "ein eleganter Salon: Wand in {sanft}, ein Samtsessel in {haupt}, ein großer Kunstdruck mit Farbflächen in {haupt} und {dunkel}, eine Lampe mit Messing in {highlight}" },
+  { id: "arbeitsplatz", name: "Arbeitsplatz", text: "ein heller Arbeitsplatz: Schreibtisch mit aufgeklapptem Laptop, Notizbuch in {haupt}, Kaffeetasse, Pinnwand mit Karten, Fenster mit Tageslicht seitlich" },
+  { id: "leseecke", name: "Leseecke", text: "eine gemütliche Leseecke: Bücherwand, weicher Teppich, Kissen in {sanft} und {haupt}, Stehlampe mit warmem Licht, eine Pflanze" },
+  { id: "fenster", name: "Fensterlicht", text: "ein lichtdurchflutetes Zimmer: großes Fenster mit leichten Vorhängen, Pflanzen auf der Fensterbank, draußen unscharf Bäume, Wand in {hell}, ein Detail in {haupt}" },
+];
+const RAUM_FOTO = { natuerlich: "natürliches Tageslicht, echte Farben", warm: "warmes, weiches Licht, goldene Töne", kuehl: "kühles, klares Licht", hell: "hell und luftig, viel Licht", sw: "zurückhaltende, fast farblose Töne", kontrast: "kräftiger Kontrast, satte Schatten", schleier: "ruhige, zurückgenommene Farben", bunt: "kräftige, fröhliche Farben" };
+function raumLibKey(uid, name) { return keyOf(uid, name); }
+function raumPrompt(v, set, wunsch) {
+  const hx = x => /^#[0-9a-f]{6}$/i.test(String(x || "")) ? String(x).toUpperCase() : "";
+  const map = { hell: hx(v.farbe_hintergrund) || "warmem Off-White", haupt: hx(v.farbe_haupt) || "einer Akzentfarbe", sanft: hx(v.farbe_sanft) || "einem zarten Pastellton", dunkel: hx(v.farbe_akzent) || hx(v.farbe_text) || "dunklem Blau", highlight: hx(v.farbe_highlight) || "Gold" };
+  const txt = (set ? set.text : "ein stimmiger Raum").replace(/\{(\w+)\}/g, (m, k) => map[k] || m);
+  return "Fotorealistisches Foto im Hochformat 9:16 als Hintergrund für ein Video. Ein Raum ohne Menschen: " + txt + ". " +
+    (wunsch ? "Wunsch: " + String(wunsch).slice(0, 300) + ". " : "") +
+    "Kamera auf Brusthöhe, gerade Perspektive, leichte Tiefenunschärfe, als säße gleich eine Person in der Bildmitte vor der Kamera. Die Mitte bleibt ruhig (Wand oder schlichte Fläche), Details stehen links und rechts und im oberen Drittel. " +
+    "Licht: " + (RAUM_FOTO[v.fotostil] || "natürliches, weiches Licht") + ". Hochwertige Interior-Fotografie, wohnlich, nicht steril. Keine Personen, kein Text, keine Buchstaben, keine Logos, keine Bildschirminhalte.";
+}
+async function raumLib(env, origin, uid) {
+  const out = [];
+  try { const l = await env.REELS_BUCKET.list({ prefix: keyOf(uid, "raum-"), limit: 40 });
+    for (const o of (l.objects || []).sort((a, b) => (b.uploaded || 0) - (a.uploaded || 0))) { const name = o.key.split("/").pop(); out.push({ name, set: name.split("-")[1] || "", url: await mediaUrl(env, origin, uid, name) }); } } catch (e) {}
+  return out;
+}
+async function routeRaum(request, env, url, m) {
+  const s = await session(request, env); if (s.err) return s.err;
+  const uid = s.user.id, origin = url.origin;
+  if (m === "GET") {
+    const brand = await loadBrand(env, uid), v = brand.visuell || {};
+    return json({ sets: RAUM_SETS.map(x => ({ id: x.id, name: x.name, prompt: raumPrompt(v, x, "") })), raeume: await raumLib(env, origin, uid), hat_look: !!(v.layout || v.farbe_haupt) });
+  }
+  const b = await readJson(request) || {};
+  if (b.action === "use") { // Raum aus der Bibliothek in einen Auftrag übernehmen
+    const j = await getJob(env, s, b.id); if (!j) return json({ error: "not_found" }, 404);
+    const name = String(b.name || ""); if (!/^raum-[a-z]+-[a-z0-9]{6,12}\.(png|jpg|webp)$/.test(name)) return json({ error: "server" }, 400);
+    const obj = await env.REELS_BUCKET.get(raumLibKey(uid, name)); if (!obj) return json({ error: "not_found" }, 404);
+    const jn = "img-" + name; await env.REELS_BUCKET.put(keyOf(j.id, jn), obj.body, { httpMetadata: { contentType: (obj.httpMetadata && obj.httpMetadata.contentType) || "image/png" } });
+    return json({ key: keyOf(j.id, jn), url: await mediaUrl(env, origin, j.id, jn) });
+  }
+  if (b.action === "delete") { const name = String(b.name || ""); if (/^raum-[a-z]+-[a-z0-9]{6,12}\.(png|jpg|webp)$/.test(name)) await env.REELS_BUCKET.delete(raumLibKey(uid, name)); return json({ ok: true, raeume: await raumLib(env, origin, uid) }); }
+  if (b.action === "make") {
+    const set = RAUM_SETS.find(x => x.id === b.set) || (b.wunsch ? { id: "eigen", text: "ein Raum nach Wunsch" } : null); if (!set) return json({ error: "server" }, 400);
+    const lib = await raumLib(env, origin, uid); if (lib.length >= 40) return json({ error: "server", detail: "Deine Raum-Bibliothek ist voll (40 Räume). Lösch zuerst einen." }, 400);
+    const cost = await db(env, "action_costs?action=eq.ki_bild&select=credits"); const need = cost && cost[0] ? Number(cost[0].credits) : 6;
+    if (creditStatus(s.acc).total < need) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
+    const brand = await loadBrand(env, uid), v = brand.visuell || {};
+    const st = await db(env, "settings?key=in.(image_model,image_quality)&select=key,value"), cfg = {}; (st || []).forEach(x => { cfg[x.key] = x.value; });
+    const model = cfg.image_model && cfg.image_model !== "auto" ? cfg.image_model : "gpt-image-1";
+    const res = await fetch("https://api.openai.com/v1/images/generations", { method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt: raumPrompt(v, set.id === "eigen" ? null : set, b.wunsch), size: "1024x1536", quality: cfg.image_quality || "medium", n: 1 }) });
+    if (!res.ok) { console.log("Raum-Bild", res.status, (await res.text()).slice(0, 300)); return json({ error: "server", detail: "Der Raum konnte gerade nicht erzeugt werden. Bitte versuch es gleich noch einmal." }, 502); }
+    const out = await res.json(); const b64 = out && out.data && out.data[0] && out.data[0].b64_json; if (!b64) return json({ error: "server" }, 502);
+    const bin = atob(b64), bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const spent = await db(env, "rpc/spend_credits", { method: "POST", body: { p_user: s.payer || uid, p_amount: need, p_action: "ki_bild", p_note: "Raum für Reels: " + set.id } });
+    const row = Array.isArray(spent) ? spent[0] : spent; if (!row || row.ok === false) return json({ error: "credits", need, have: creditStatus(s.acc).total }, 402);
+    const name = "raum-" + set.id + "-" + crypto.randomUUID().replace(/-/g, "").slice(0, 8) + ".png";
+    await env.REELS_BUCKET.put(raumLibKey(uid, name), bytes, { httpMetadata: { contentType: "image/png" } });
+    return json({ ok: true, name, url: await mediaUrl(env, origin, uid, name), raeume: await raumLib(env, origin, uid) });
+  }
+  return json({ error: "server" }, 400);
 }
 
 async function routeImage(request, env) {

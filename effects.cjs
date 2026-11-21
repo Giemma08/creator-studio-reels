@@ -25,6 +25,7 @@ const EFFECTS = {
   greenscreen: { label: "Green Screen", needs: "du sprichst über etwas, das man zeigen kann", minDur: 2.2, maxDur: 5, cutout: true },
   popout:      { label: "Pop-out", needs: "ein Moment, der herausstechen soll", minDur: 1.8, maxDur: 4, cutout: true },
   lichtaus:    { label: "Licht aus", needs: "ein Satz, der auf ein starkes Wort hinausläuft", minDur: 1.4, maxDur: 3, cutout: true },
+  raum:        { label: "Raum-Wechsel", needs: "du sitzt oder stehst ruhig vor der Kamera", minDur: 1.5, maxDur: 20, cutout: true, manual: true },
 };
 const CUTOUT = Object.keys(EFFECTS).filter(k => EFFECTS[k].cutout);
 
@@ -192,9 +193,25 @@ function neededHeight(fx) {
 
 // Effekte aus Wort-Markierungen in Zeiten des geschnittenen Reels umrechnen
 function planEffects(effects, words, map, layout) {
-  const out = [];
+  // 2.81: Raum-Wechsel liegt als Untergrund unter allem. Andere Grafik-Effekte dürfen darüber laufen,
+  // andere Freistellungs-Effekte nicht (zwei Untergründe gleichzeitig gehen nicht).
+  const list = (effects || []).slice(0, 8), raeume = [], out = [];
+  let lastR = -1;
+  for (const fx of list) {
+    if (fx.type !== "raum" || fx.off || !EFFECTS.raum) continue;
+    const startW = words[fx.von] || words[fx.wort]; if (!startW || startW.cut) continue;
+    const endW = words[fx.bis] || startW;
+    let t0 = Math.max(0, map(startW.s) - 0.1);
+    if (t0 < lastR + 0.3 && t0 > lastR - 1.5) t0 = lastR; // nahtlos an den vorigen Raum anschließen
+    if (t0 < lastR) continue;
+    const t1 = Math.min(Math.max(t0 + EFFECTS.raum.minDur, map(endW.e) + 0.15), t0 + EFFECTS.raum.maxDur, map.total - 0.05);
+    if (t1 - t0 < 1.2) continue;
+    raeume.push({ fx: Object.assign({}, fx), t0, t1, d: t1 - t0, place: { top: 0, zone: "manual", hideCaptions: false } }); lastR = t1;
+  }
+  const inRaum = (t0, t1) => raeume.some(r => t0 < r.t1 && t1 > r.t0);
   let lastEnd = -1;
-  for (const fx of (effects || []).slice(0, 4)) { // bis zu 4 Effekte, wie im Editor (2.13.2)
+  for (const fx of list) {
+    if (fx.type === "raum") continue;
     if (!EFFECTS[fx.type] || fx.off || (fx.type === "gif" && !fx.mp4 && !fx.src)) continue;
     const startW = words[fx.von] || words[fx.wort];
     if (!startW || startW.cut) continue;
@@ -208,6 +225,7 @@ function planEffects(effects, words, map, layout) {
       if (t0 > map(endW.e) + 0.3) continue;
     }
     if (t1 - t0 < 1.2) continue;
+    if (EFFECTS[fx.type].cutout && inRaum(t0, t1)) continue;
     // Selbst gewählte Höhe (Prozent von oben) hat Vorrang vor der automatischen Platzierung (2.13.4)
     const place = fx.gy != null && isFinite(Number(fx.gy)) ? { top: Math.round(Number(fx.gy) / 100 * 1920), zone: "manual", hideCaptions: false } : placement(layout, neededHeight(fx));
     const copy = Object.assign({}, fx);
@@ -217,7 +235,7 @@ function planEffects(effects, words, map, layout) {
     out.push({ fx: copy, t0, t1, d: t1 - t0, place });
     lastEnd = t1;
   }
-  return out;
+  return raeume.concat(out);
 }
 
 // Projektordner für einen Effekt schreiben (HTML + GSAP + Schriften)
